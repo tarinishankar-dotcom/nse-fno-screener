@@ -1,132 +1,141 @@
-from openchart import NSEData
+import openchart
 import pandas as pd
 
 print("=" * 60)
-print("OPENCHART NSE F&O MASTER TEST")
+print("CURRENT NSE F&O FUTURES DISCOVERY - OPENCHART")
 print("=" * 60)
 
-nse = NSEData()
+# ---------------------------------------------------------
+# OPENCHART
+# ---------------------------------------------------------
+nse = openchart.NSEData()
 
-print("\nSEGMENTS:")
+print("\n[1] SEGMENTS")
 print(nse.segments())
 
-print("\nTIMEFRAMES:")
+print("\n[2] TIMEFRAMES")
 print(nse.timeframes())
 
-print("\nSEARCH URL:")
-print(nse.search_url)
-
 # ---------------------------------------------------------
-# TEST FO SEARCH
+# TEST SYMBOL SEARCH
 # ---------------------------------------------------------
-
 symbols = [
     "RELIANCE",
     "HDFCBANK",
     "ICICIBANK",
-    "SBIN",
-    "AXISBANK",
     "INFY",
     "TCS",
-    "HCLTECH",
-    "WIPRO",
-    "LT",
-    "ITC",
-    "BHARTIARTL",
-    "KOTAKBANK",
-    "MARUTI",
-    "M&M",
+    "SBIN",
+    "AXISBANK",
     "TATAMOTORS",
-    "TATASTEEL",
-    "SUNPHARMA",
-    "ADANIENT",
-    "ADANIPORTS",
 ]
 
-all_rows = []
-
 print("\n" + "=" * 60)
-print("SEARCHING FO")
+print("SYMBOL SEARCH TEST")
 print("=" * 60)
 
-for name in symbols:
-
-    print("\n--------------------------------")
-    print("SYMBOL:", name)
-    print("--------------------------------")
+for symbol in symbols:
+    print("\n----------------------------------------")
+    print("SEARCH:", symbol)
+    print("----------------------------------------")
 
     try:
+        result = nse.search(symbol, segment="FO")
 
-        df = nse.search(name, segment="FO")
+        print(result)
 
-        if df is None:
-            print("RESULT: None")
-            continue
-
-        if df.empty:
-            print("RESULT: EMPTY")
-            continue
-
-        print("ROWS:", len(df))
-        print("COLUMNS:", list(df.columns))
-
-        print(df.to_string(index=False))
-
-        # -------------------------------------------------
-        # Detect FUT rows without assuming exact type text
-        # -------------------------------------------------
-
-        for _, row in df.iterrows():
-
-            row_text = " ".join(
-                str(x) for x in row.tolist()
-            ).upper()
-
-            if "FUT" in row_text:
-
-                all_rows.append(row.to_dict())
+        if result is not None:
+            print("ROWS:", len(result))
+            print("COLUMNS:", list(result.columns))
 
     except Exception as e:
-
         print("ERROR:", repr(e))
 
 
 # ---------------------------------------------------------
-# FINAL RESULT
+# TRY DIRECT FO SEARCH
 # ---------------------------------------------------------
-
 print("\n" + "=" * 60)
-print("FINAL FUTURES DISCOVERY")
+print("FO MASTER DISCOVERY")
 print("=" * 60)
 
-if len(all_rows) == 0:
+test_symbols = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "RELIANCE",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "TCS",
+    "SBIN",
+    "AXISBANK",
+]
 
-    print("\nNO FUTURES FOUND")
+all_data = []
 
-    print("\nIMPORTANT:")
-    print("OpenChart search() is currently returning the")
-    print("INDEX master even when segment='FO' is supplied.")
+for symbol in test_symbols:
 
-    print("\nWe will NOT guess future symbols.")
+    try:
+        df = nse.search(symbol, segment="FO")
 
-else:
+        if df is not None and len(df) > 0:
 
-    final = pd.DataFrame(all_rows)
+            print(
+                f"{symbol:15} -> {len(df)} records"
+            )
 
-    final = final.drop_duplicates()
+            df = df.copy()
+            df["search_symbol"] = symbol
 
-    print("\nTOTAL FUTURE-LIKE RECORDS:", len(final))
+            all_data.append(df)
 
-    print("\n")
-    print(final.to_string(index=False))
+        else:
+            print(
+                f"{symbol:15} -> 0 records"
+            )
 
-    final.to_csv(
-        "future_search_results.csv",
+    except Exception as e:
+        print(
+            f"{symbol:15} -> ERROR: {e}"
+        )
+
+
+# ---------------------------------------------------------
+# COMBINE
+# ---------------------------------------------------------
+print("\n" + "=" * 60)
+print("COMBINING RESULTS")
+print("=" * 60)
+
+if all_data:
+
+    combined = pd.concat(
+        all_data,
+        ignore_index=True
+    )
+
+    print("TOTAL RECORDS:", len(combined))
+
+    print("\nCOLUMNS:")
+    print(list(combined.columns))
+
+    print("\nFIRST RECORDS:")
+    print(combined.head(30).to_string())
+
+    combined.to_csv(
+        "fo_search_results.csv",
         index=False
     )
 
     print("\nFILE CREATED:")
-    print("future_search_results.csv")
+    print("fo_search_results.csv")
+
+else:
+
+    print("NO FO RECORDS FOUND")
+
 
 print("\n" + "=" * 60)
 print("TEST COMPLETE")
