@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 from openchart import NSEData
 
 # ============================================================
-# NSE F&O BUY / SELL SCREENER WITH DATA FALLBACK
+# NSE F&O BUY / SELL SCREENER (AUTO DATE FALLBACK FIX)
 # ============================================================
 print("=" * 75)
-print("NSE F&O BUY / SELL SCREENER (ROBUST DATA FETCH)")
+print("NSE F&O BUY / SELL SCREENER")
 print("=" * 75)
 
 VOLUME_LOOKBACK = 20
@@ -26,7 +26,7 @@ HEADERS = {
 }
 
 def load_stock_futures():
-    print("\n[1] Loading NSE F&O Master List...")
+    print("\n[1] Fetching F&O Symbols from NSE Master...")
     try:
         r = requests.get(MASTER_URL, headers=HEADERS, timeout=15)
         if r.status_code == 200:
@@ -36,15 +36,14 @@ def load_stock_futures():
             sym_col = "SYMBOL" if "SYMBOL" in df.columns else ("UNDERLYING" if "UNDERLYING" in df.columns else None)
             if sym_col:
                 symbols = df[sym_col].astype(str).str.strip().dropna().unique().tolist()
-                indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "NIFTYFPI"]
+                indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "NIFTYFPI", "SYMBOL"]
                 stocks = [s for s in symbols if s not in indices and not s.startswith("UNDERLYING")]
-                print(f"FETCHED {len(stocks)} STOCK SYMBOLS")
+                print(f"FETCHED {len(stocks)} VALID STOCK SYMBOLS")
                 return stocks
     except Exception as e:
         print(f"Master download error: {str(e)[:100]}")
         
     if os.path.exists("stock_futures.csv"):
-        print("Using local stock_futures.csv...")
         f_df = pd.read_csv("stock_futures.csv")
         f_df.columns = [str(c).strip().lower() for c in f_df.columns]
         return f_df["symbol"].dropna().unique().tolist()
@@ -54,9 +53,23 @@ def load_stock_futures():
 symbols = load_stock_futures()
 nse = NSEData()
 
-today = datetime.now().date()
-start_dt = datetime.combine(today, datetime.strptime(MARKET_OPEN, "%H:%M").time())
-end_dt = datetime.combine(today, datetime.strptime(MARKET_CLOSE, "%H:%M").time())
+def get_trading_dates():
+    """ Determines current trading day or shifts back if weekend/after-hours """
+    now = datetime.now()
+    target_date = now.date()
+    
+    # If Sunday (6) or Saturday (5), shift back to Friday
+    if target_date.weekday() == 5:
+        target_date -= timedelta(days=1)
+    elif target_date.weekday() == 6:
+        target_date -= timedelta(days=2)
+        
+    start_dt = datetime.combine(target_date, datetime.strptime(MARKET_OPEN, "%H:%M").time())
+    end_dt = datetime.combine(target_date, datetime.strptime(MARKET_CLOSE, "%H:%M").time())
+    return target_date, start_dt, end_dt
+
+target_date, start_dt, end_dt = get_trading_dates()
+print(f"TARGET SCAN DATE: {target_date}")
 
 def clean_columns(df):
     df = df.copy()
@@ -83,28 +96,35 @@ def normalize_timestamp(df):
     df.index = idx
     return df
 
-def fetch_data_with_fallback(symbol, start, end, tf):
-    """ Tries fetching F&O segment first, falls back to EQ if data is empty """
-    try:
-        data = nse.historical(symbol, "FO", start, end, tf)
-        if data is not None and len(data) > 0:
-            return data
-    except Exception:
-        pass
+def fetch_data_robust(symbol, start, end, tf):
+    """ Tries FO first, then EQ fallback, across last 5 days if today is blank """
+    for offset in range(5):
+        curr_start = start - timedelta(days=offset)
+        curr_end = end - timedelta(days=offset)
         
-    try:
-        # Fallback to Spot / Equity Segment
-        data = nse.historical(symbol, "EQ", start, end, tf)
-        if data is not None and len(data) > 0:
-            return data
-    except Exception:
-        pass
-    return None
+        # Try FO Segment
+        try:
+            data = nse.historical(symbol, "FO", curr_start, curr_end, tf)
+            if data is not None and len(data) > 0:
+                return data, curr_start.date()
+        except Exception:
+            pass
+            
+        # Try Equity Segment Fallback
+        try:
+            data = nse.historical(symbol, "EQ", curr_start, curr_end, tf)
+            if data is not None and len(data) > 0:
+                return data, curr_start.date()
+        except Exception:
+            pass
+            
+    return None, None
 
-def get_pdh_pdl(symbol):
+def get_pdh_pdl(symbol, active_date):
     try:
-        prev_start = today - timedelta(days=7)
-        data = fetch_data_with_fallback(symbol, prev_start, end_dt, "1d")
+        prev_start = active_date - timedelta(days=7)
+        prev_end = datetime.combine(active_date - timedelta(days=1), datetime.strptime(MARKET_CLOSE, "%H:%M").time())
+        data, _ = fetch_data_robust(symbol, prev_start, prev_end, "1d")
 
         if data is None or len(data) == 0:
             return None, None
@@ -114,7 +134,7 @@ def get_pdh_pdl(symbol):
         if data is None or "high" not in data.columns:
             return None, None
 
-        data = data[data.index.date < today]
+        data = data[data.index.date < active_date]
         if len(data) == 0:
             return None, None
 
@@ -126,7 +146,7 @@ def get_pdh_pdl(symbol):
 
 def calculate_signal(symbol):
     try:
-        data = fetch_data_with_fallback(symbol, start_dt, end_dt, "5m")
+        data, active_date = fetch_data_robust(symbol, start_dt, end_dt, "5m")
 
         if data is None or len(data) == 0:
             return "DATA_ERROR"
@@ -148,7 +168,7 @@ def calculate_signal(symbol):
         if len(data) < 3:
             return "INSUFFICIENT_BARS"
 
-        pdh, pdl = get_pdh_pdl(symbol)
+        pdh, pdl = get_pdh_pdl(symbol, active_date)
         if pdh is None or pdl is None:
             return "NO_PDH_PDL"
 
@@ -163,7 +183,7 @@ def calculate_signal(symbol):
         orb_high = max(float(c915_r["high"]), float(c920_r["high"]))
         orb_low = min(float(c915_r["low"]), float(c920_r["low"]))
 
-        # Volume Validation
+        # Volume Condition (9:15, 9:20, or 9:25)
         data["vol_avg_20"] = data["volume"].rolling(VOLUME_LOOKBACK).mean().shift(1)
         volume_pass = False
 
@@ -217,11 +237,11 @@ def calculate_signal(symbol):
 
         return "NO_SIGNAL"
 
-    except Exception as e:
-        return f"ERROR: {str(e)[:50]}"
+    except Exception:
+        return "ERROR"
 
 # ------------------------------------------------------------
-# RUN SCREENER
+# EXECUTE SCREENER
 # ------------------------------------------------------------
 results = []
 total = len(symbols)
@@ -239,7 +259,7 @@ for i, symbol in enumerate(symbols, start=1):
     time.sleep(0.05)
 
 # ------------------------------------------------------------
-# EXPORT RESULTS
+# WRITE OUTPUT
 # ------------------------------------------------------------
 if results:
     df_res = pd.DataFrame(results)
@@ -252,4 +272,4 @@ else:
     print("\nNO SIGNALS GENERATED")
 
 df_res.to_csv("screener_results.csv", index=False)
-print("\n[COMPLETE] Saved output to screener_results.csv")
+print("\n[COMPLETE] Saved results to screener_results.csv")
