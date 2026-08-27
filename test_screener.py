@@ -7,16 +7,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FIXED F&O SCREENER (USING LOCAL CSV SYMBOLS)
+# FIXED F&O SCREENER (OPENCHART COMPATIBLE)
 # ============================================================
 print("=" * 75)
-print("NSE F&O SCREENER (LOCAL CSV DATA DRIVEN)")
+print("NSE F&O SCREENER (OPENCHART SYSTEM)")
 print("=" * 75)
 
 MAX_WORKERS = 3
 
+# Step 1: Initialize & Download Master DB
+print("Initializing OpenChart Master Data...")
+nse = NSEData()
+try:
+    nse.download()
+    print("Master data updated successfully!")
+except Exception as e:
+    print(f"Warning during master download: {e}")
+
+# Step 2: Load Symbols from local CSV
 def load_stock_futures():
-    """ Load symbols directly from local stock_futures.csv """
     csv_file = "stock_futures.csv"
     if os.path.exists(csv_file):
         try:
@@ -29,11 +38,9 @@ def load_stock_futures():
         except Exception as e:
             print(f"Error reading local CSV: {e}")
             
-    # Fallback default symbols
     return ["RELIANCE", "SBIN", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 symbols = load_stock_futures()
-nse = NSEData()
 
 def get_trading_dates():
     now = datetime.now()
@@ -50,7 +57,7 @@ def get_trading_dates():
 target_date, start_dt, end_dt = get_trading_dates()
 
 def process_single_symbol(symbol):
-    """ Safe worker function """
+    """ Safe worker function using standard exchange tag """
     time.sleep(random.uniform(0.1, 0.3))
     try:
         data = None
@@ -58,17 +65,20 @@ def process_single_symbol(symbol):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
-                # Primary attempt: Stock Segment / Alternate: Equity Segment
-                data = nse.historical(symbol, "FO", s_dt, e_dt, "5m")
-                if data is None or len(data) == 0:
-                    data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
-                
-                if data is not None and len(data) > 0:
+                # Correct exchange parameter set to 'NSE'
+                data = nse.historical(
+                    symbol=symbol,
+                    exchange='NSE',
+                    start=s_dt,
+                    end=e_dt,
+                    interval='5m'
+                )
+                if data is not None and not data.empty:
                     break
             except Exception:
                 continue
 
-        if data is None or len(data) < 3:
+        if data is None or data.empty or len(data) < 3:
             return None
 
         data.columns = [str(c).strip().lower() for c in data.columns]
