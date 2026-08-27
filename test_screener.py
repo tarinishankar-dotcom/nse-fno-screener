@@ -7,25 +7,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FIXED F&O SCREENER (OPENCHART COMPATIBLE)
+# FIXED & DEBUG-READY NSE F&O SCREENER
 # ============================================================
 print("=" * 75)
-print("NSE F&O SCREENER (OPENCHART SYSTEM)")
+print("NSE F&O SCREENER (OPENCHART INTEGRATION)")
 print("=" * 75)
 
 MAX_WORKERS = 3
 
-# Step 1: Initialize & Download Master DB
-print("Initializing OpenChart Master Data...")
-nse = NSEData()
-try:
-    nse.download()
-    print("Master data updated successfully!")
-except Exception as e:
-    print(f"Warning during master download: {e}")
-
-# Step 2: Load Symbols from local CSV
 def load_stock_futures():
+    """ Load symbols directly from local stock_futures.csv """
     csv_file = "stock_futures.csv"
     if os.path.exists(csv_file):
         try:
@@ -41,6 +32,7 @@ def load_stock_futures():
     return ["RELIANCE", "SBIN", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 symbols = load_stock_futures()
+nse = NSEData()
 
 def get_trading_dates():
     now = datetime.now()
@@ -57,22 +49,21 @@ def get_trading_dates():
 target_date, start_dt, end_dt = get_trading_dates()
 
 def process_single_symbol(symbol):
-    """ Safe worker function using standard exchange tag """
+    """ Fetch candles with fallback logic """
     time.sleep(random.uniform(0.1, 0.3))
     try:
         data = None
+        # Try last 3 days to account for market holidays/weekends
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
-                # Correct exchange parameter set to 'NSE'
-                data = nse.historical(
-                    symbol=symbol,
-                    exchange='NSE',
-                    start=s_dt,
-                    end=e_dt,
-                    interval='5m'
-                )
+                # Primary call: exchange="NSE"
+                data = nse.historical(symbol, "NSE", s_dt, e_dt, "5m")
+                if data is None or data.empty:
+                    # Alternate call: exchange="NFO"
+                    data = nse.historical(symbol, "NFO", s_dt, e_dt, "5m")
+                
                 if data is not None and not data.empty:
                     break
             except Exception:
@@ -81,12 +72,21 @@ def process_single_symbol(symbol):
         if data is None or data.empty or len(data) < 3:
             return None
 
+        # Standardize DataFrame columns
         data.columns = [str(c).strip().lower() for c in data.columns]
-        if "timestamp" in data.columns:
-            data = data.set_index(pd.to_datetime(data["timestamp"]))
         
-        data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
-                    (data.index.time <= pd.Timestamp("15:30").time())]
+        # Datetime column indexing
+        if "timestamp" in data.columns:
+            data["datetime"] = pd.to_datetime(data["timestamp"])
+            data = data.set_index("datetime")
+        elif "date" in data.columns:
+            data["datetime"] = pd.to_datetime(data["date"])
+            data = data.set_index("datetime")
+            
+        # Filter Market Hours (09:15 to 15:30)
+        if isinstance(data.index, pd.DatetimeIndex):
+            data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
+                        (data.index.time <= pd.Timestamp("15:30").time())]
 
         if len(data) < 3:
             return None
@@ -100,13 +100,15 @@ def process_single_symbol(symbol):
         for ts, row in scan_data.iterrows():
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
             
+            time_str = ts.strftime("%H:%M") if hasattr(ts, 'strftime') else str(ts)
+            
             if high >= orb_high:
                 pct = round(((close - day_open) / day_open) * 100, 2)
-                return {"symbol": symbol, "signal": "BUY", "time": ts.strftime("%H:%M"), "price": round(close, 2), "pct": pct}
+                return {"symbol": symbol, "signal": "BUY", "time": time_str, "price": round(close, 2), "pct": pct}
 
             if low <= orb_low:
                 pct = round(((close - day_open) / day_open) * 100, 2)
-                return {"symbol": symbol, "signal": "SELL", "time": ts.strftime("%H:%M"), "price": round(close, 2), "pct": pct}
+                return {"symbol": symbol, "signal": "SELL", "time": time_str, "price": round(close, 2), "pct": pct}
 
     except Exception:
         return None
@@ -138,4 +140,4 @@ if results:
     print(df_res.to_string(index=False))
     df_res.to_csv("screener_results.csv", index=False)
 else:
-    print("NO SIGNALS DETECTED")
+    print("NO SIGNALS DETECTED (Data fetched or ORB Breakout criteria not met for today)")
