@@ -33,13 +33,23 @@ def fetch_data(symbol):
         if res.status_code == 200:
             raw_data = res.json()
             if "grapthData" in raw_data and raw_data["grapthData"]:
-                df = pd.DataFrame(raw_data["grapthData"], columns=["timestamp", "price"])
+                sample_item = raw_data["grapthData"][0]
+                if len(sample_item) >= 3:
+                    df = pd.DataFrame(raw_data["grapthData"], columns=["timestamp", "price", "volume"])
+                else:
+                    df = pd.DataFrame(raw_data["grapthData"], columns=["timestamp", "price"])
+                    df["volume"] = 0
+                
                 df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
                 df = df.set_index("datetime")
                 
-                # Resampling Timeframes
-                df_1m = df["price"].resample("1min").ohlc().dropna()
-                df_5m = df["price"].resample("5min").ohlc().dropna()
+                df_1m = df["price"].resample("1min").ohlc()
+                df_1m["volume"] = df["volume"].resample("1min").sum()
+                df_1m = df_1m.dropna()
+
+                df_5m = df["price"].resample("5min").ohlc()
+                df_5m["volume"] = df["volume"].resample("5min").sum()
+                df_5m = df_5m.dropna()
                 
                 return df_1m, df_5m
     except Exception:
@@ -52,48 +62,46 @@ def process_single_symbol(symbol):
         return None
 
     try:
-        # Day Metrics
-        day_open = float(df_1m.iloc[0]["open"])
-        day_high = float(df_1m["high"].max())
-        day_low = float(df_1m["low"].min())
-        latest_price = float(df_1m.iloc[-1]["close"])
-
-        # 5-Min Opening Range (First 15 Mins)
+        # First 3 candles (9:15, 9:20, 9:25) on 5-min chart for ORB & Volume
         orb_candles = df_5m.iloc[:3]
         orb_high = float(orb_candles["high"].max())
         orb_low = float(orb_candles["low"].min())
+        
+        avg_vol = orb_candles["volume"].mean()
+        has_volume_spike = any(orb_candles["volume"] >= (1.5 * avg_vol))
+        
+        if not has_volume_spike and avg_vol > 0:
+            return None
 
-        # Scan 1-Min Data after 15 mins for exact breakout timing
+        day_open = float(df_1m.iloc[0]["open"])
+        day_high = float(df_1m["high"].max())
+        day_low = float(df_1m["low"].min())
+        day_close = float(df_1m.iloc[-1]["close"])
+
+        # Scan 1-Min data after 9:30 for breakouts
         scan_1m = df_1m.iloc[15:].copy()
         for ts, row in scan_1m.iterrows():
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
             time_str = ts.strftime("%H:%M")
-
-            # Day Change Percentage
-            day_pct = round(((latest_price - day_open) / day_open) * 100, 2)
+            
+            # Signal ke waqt open price se kitna % movement hua
+            signal_move_pct = round(((close - day_open) / day_open) * 100, 2)
+            day_change_pct = round(((day_close - day_open) / day_open) * 100, 2)
 
             if high >= orb_high:
                 return {
-                    "symbol": symbol,
-                    "signal": "BUY",
-                    "time": time_str,
-                    "price": round(close, 2),
-                    "day_open": day_open,
-                    "day_high": day_high,
-                    "day_low": day_low,
-                    "day_change_%": day_pct
+                    "symbol": symbol, "signal": "BUY", "time": time_str,
+                    "price": round(close, 2), "signal_move_%": signal_move_pct,
+                    "day_open": day_open, "day_high": day_high, "day_low": day_low,
+                    "day_close": day_close, "day_change_%": day_change_pct
                 }
 
             if low <= orb_low:
                 return {
-                    "symbol": symbol,
-                    "signal": "SELL",
-                    "time": time_str,
-                    "price": round(close, 2),
-                    "day_open": day_open,
-                    "day_high": day_high,
-                    "day_low": day_low,
-                    "day_change_%": day_pct
+                    "symbol": symbol, "signal": "SELL", "time": time_str,
+                    "price": round(close, 2), "signal_move_%": signal_move_pct,
+                    "day_open": day_open, "day_high": day_high, "day_low": day_low,
+                    "day_close": day_close, "day_change_%": day_change_pct
                 }
     except Exception:
         return None
@@ -101,7 +109,7 @@ def process_single_symbol(symbol):
     return None
 
 results = []
-print(f"Scanning {len(symbols)} F&O stocks across 1M, 5M & Day levels...")
+print(f"Scanning {len(symbols)} F&O stocks with 9:15-9:30 ORB + 1.5x Volume & Day Metrics...")
 start_time = datetime.now()
 
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -118,4 +126,4 @@ if results:
     df_res = pd.DataFrame(results).sort_values(by="time")
     print(df_res.to_string(index=False))
 else:
-    print("NO SIGNALS DETECTED")
+    print("NO SIGNALS MATCHING VOLUME & ORB CRITERIA")
