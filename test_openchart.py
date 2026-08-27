@@ -5,14 +5,14 @@ print("Starting OpenChart Futures candle test...")
 
 nse = NSEData()
 
-# Search actual NIFTY futures
 fo = nse.search("NIFTY", "FO")
 
 print("\n=== FO SEARCH RESULT ===")
 print(fo.to_string(index=False))
 
-# Select only Futures contracts
-futures = fo[fo["type"].astype(str).str.lower() == "futures"]
+futures = fo[
+    fo["type"].astype(str).str.lower().isin(["futures", "future", "fut"])
+]
 
 print("\n=== FUTURES ONLY ===")
 
@@ -22,7 +22,6 @@ if futures.empty:
 
 print(futures.to_string(index=False))
 
-# Take the first available futures contract
 symbol = futures.iloc[0]["symbol"]
 
 print(f"\nTesting candle data for: {symbol}")
