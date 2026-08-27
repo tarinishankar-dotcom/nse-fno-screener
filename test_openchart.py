@@ -1,15 +1,16 @@
 from openchart import NSEData
-from datetime import datetime, timedelta
 
-print("Starting OpenChart test...")
+print("Starting NSE F&O data test...")
 
 nse = NSEData()
 
-print("Searching NIFTY futures...")
-
+# Search NIFTY Futures
 fo = nse.search("NIFTY", "FO")
 
-print("\nNIFTY Futures:")
-print(fo.head(10).to_string(index=False))
+print("\n=== NIFTY FUTURES ===")
 
-print("\nOpenChart import + NSE search = OK")
+if fo is None or fo.empty:
+    print("NO F&O SYMBOL FOUND")
+else:
+    print(fo.to_string(index=False))
+    print("\nF&O SEARCH = OK")
