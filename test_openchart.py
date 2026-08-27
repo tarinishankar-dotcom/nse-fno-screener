@@ -1,36 +1,26 @@
 from openchart import NSEData
 import pandas as pd
-from datetime import datetime
 
 print("=" * 60)
-print("FULL NSE F&O FUTURES DISCOVERY")
+print("OPENCHART NSE F&O MASTER TEST")
 print("=" * 60)
 
 nse = NSEData()
 
-print("\n[1] SEGMENTS")
+print("\nSEGMENTS:")
 print(nse.segments())
 
-print("\n[2] TIMEFRAMES")
+print("\nTIMEFRAMES:")
 print(nse.timeframes())
 
-# ---------------------------------------------------------
-# VERY IMPORTANT:
-# Download NSE + NFO master data first
-# ---------------------------------------------------------
-print("\n[3] DOWNLOADING NSE/NFO MASTER DATA...")
-
-try:
-    result = nse.download()
-    print("MASTER DOWNLOAD:", result)
-except Exception as e:
-    print("MASTER DOWNLOAD ERROR:", e)
-    raise SystemExit(1)
+print("\nSEARCH URL:")
+print(nse.search_url)
 
 # ---------------------------------------------------------
-# Stock symbols whose futures we want
+# TEST FO SEARCH
 # ---------------------------------------------------------
-stocks = [
+
+symbols = [
     "RELIANCE",
     "HDFCBANK",
     "ICICIBANK",
@@ -53,146 +43,91 @@ stocks = [
     "ADANIPORTS",
 ]
 
-all_futures = []
+all_rows = []
 
 print("\n" + "=" * 60)
-print("SEARCHING STOCK FUTURES")
+print("SEARCHING FO")
 print("=" * 60)
 
-for stock in stocks:
+for name in symbols:
 
-    print("\n----------------------------------------")
-    print("STOCK:", stock)
-    print("----------------------------------------")
+    print("\n--------------------------------")
+    print("SYMBOL:", name)
+    print("--------------------------------")
 
     try:
-        df = nse.search(stock, "FO")
 
-        if df is None or df.empty:
-            print("NO FO RESULT")
+        df = nse.search(name, segment="FO")
+
+        if df is None:
+            print("RESULT: None")
             continue
 
-        print("TOTAL RESULTS:", len(df))
-
-        # Only Futures
-        futures = df[
-            df["type"].astype(str).str.lower() == "futures"
-        ].copy()
-
-        if futures.empty:
-            print("NO FUTURES FOUND")
+        if df.empty:
+            print("RESULT: EMPTY")
             continue
 
-        print("FUTURES FOUND:", len(futures))
+        print("ROWS:", len(df))
+        print("COLUMNS:", list(df.columns))
 
-        print(
-            futures[
-                ["symbol", "scripcode", "description", "type", "exchange"]
-            ].to_string(index=False)
-        )
+        print(df.to_string(index=False))
 
-        for _, row in futures.iterrows():
+        # -------------------------------------------------
+        # Detect FUT rows without assuming exact type text
+        # -------------------------------------------------
 
-            symbol = str(row["symbol"])
+        for _, row in df.iterrows():
 
-            # Keep only actual FUT contracts
-            if symbol.upper().endswith("FUT"):
+            row_text = " ".join(
+                str(x) for x in row.tolist()
+            ).upper()
 
-                all_futures.append({
-                    "underlying": stock,
-                    "symbol": symbol,
-                    "scripcode": row["scripcode"],
-                    "description": row["description"],
-                    "type": row["type"],
-                    "exchange": row["exchange"]
-                })
+            if "FUT" in row_text:
+
+                all_rows.append(row.to_dict())
 
     except Exception as e:
-        print("ERROR:", e)
+
+        print("ERROR:", repr(e))
+
 
 # ---------------------------------------------------------
-# Create dataframe
+# FINAL RESULT
 # ---------------------------------------------------------
-print("\n" + "=" * 60)
-print("FINAL FUTURES LIST")
-print("=" * 60)
-
-if not all_futures:
-
-    print("\nNO STOCK FUTURES FOUND")
-    print("\nThis means the OpenChart master download/search")
-    print("is not returning NFO data correctly.")
-
-    raise SystemExit(1)
-
-final_df = pd.DataFrame(all_futures)
-
-# Remove duplicate contracts
-final_df = final_df.drop_duplicates(
-    subset=["symbol", "scripcode"]
-).reset_index(drop=True)
-
-# Sort
-final_df = final_df.sort_values(
-    ["underlying", "symbol"]
-).reset_index(drop=True)
-
-print("\nTOTAL FUTURES:", len(final_df))
-
-print("\n")
-print(final_df.to_string(index=False))
-
-# ---------------------------------------------------------
-# Separate index futures
-# ---------------------------------------------------------
-index_names = [
-    "NIFTY",
-    "BANKNIFTY",
-    "FINNIFTY",
-    "MIDCPNIFTY",
-    "NIFTYNXT50"
-]
-
-index_futures = final_df[
-    final_df["underlying"].isin(index_names)
-].copy()
-
-stock_futures = final_df[
-    ~final_df["underlying"].isin(index_names)
-].copy()
-
-# ---------------------------------------------------------
-# Save files
-# ---------------------------------------------------------
-final_df.to_csv(
-    "all_futures.csv",
-    index=False
-)
-
-stock_futures.to_csv(
-    "stock_futures.csv",
-    index=False
-)
-
-index_futures.to_csv(
-    "index_futures.csv",
-    index=False
-)
 
 print("\n" + "=" * 60)
-print("FILES CREATED")
+print("FINAL FUTURES DISCOVERY")
 print("=" * 60)
 
-print("all_futures.csv")
-print("stock_futures.csv")
-print("index_futures.csv")
+if len(all_rows) == 0:
+
+    print("\nNO FUTURES FOUND")
+
+    print("\nIMPORTANT:")
+    print("OpenChart search() is currently returning the")
+    print("INDEX master even when segment='FO' is supplied.")
+
+    print("\nWe will NOT guess future symbols.")
+
+else:
+
+    final = pd.DataFrame(all_rows)
+
+    final = final.drop_duplicates()
+
+    print("\nTOTAL FUTURE-LIKE RECORDS:", len(final))
+
+    print("\n")
+    print(final.to_string(index=False))
+
+    final.to_csv(
+        "future_search_results.csv",
+        index=False
+    )
+
+    print("\nFILE CREATED:")
+    print("future_search_results.csv")
 
 print("\n" + "=" * 60)
-print("COUNTS")
+print("TEST COMPLETE")
 print("=" * 60)
-
-print("ALL FUTURES :", len(final_df))
-print("STOCK FUTURES:", len(stock_futures))
-print("INDEX FUTURES:", len(index_futures))
-
-print("\nTEST COMPLETE")
