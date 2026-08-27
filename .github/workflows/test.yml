@@ -1,10 +1,10 @@
-name: NSE FNO Screener Test
+name: NSE FNO Screener
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  screener:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,6 +20,22 @@ jobs:
         run: |
           pip install pandas requests openchart
 
-      - name: Run OpenChart test
+      - name: Run NSE F&O Screener
         run: |
-          python test_openchart.py
+          python test_screener.py
+
+      - name: Show Results
+        run: |
+          echo "=============================================="
+          echo "SCREENER COMPLETE"
+          echo "=============================================="
+          if [ -f screener_results.csv ]; then
+            echo "Result file created:"
+            ls -lh screener_results.csv
+            echo ""
+            echo "RESULT:"
+            cat screener_results.csv
+          else
+            echo "ERROR: screener_results.csv NOT FOUND"
+            exit 1
+          fi
