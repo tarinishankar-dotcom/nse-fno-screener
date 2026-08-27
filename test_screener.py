@@ -2,15 +2,16 @@ import os
 import time
 import random
 import pandas as pd
+import yfinance as yf
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FIXED NSE F&O SCREENER (EXACT OPENCHART SEGMENT SCRIPT)
+# HYBRID F&O SCREENER (OPENCHART + YFINANCE FALLBACK)
 # ============================================================
 print("=" * 75)
-print("NSE F&O SCREENER (OPENCHART INTEGRATION)")
+print("NSE F&O SCREENER (CLOUD BLOCK-PROOF WITH YFINANCE)")
 print("=" * 75)
 
 MAX_WORKERS = 3
@@ -48,45 +49,74 @@ def get_trading_dates():
 
 target_date, start_dt, end_dt = get_trading_dates()
 
-def process_single_symbol(symbol):
-    """ Fetch candles with valid OpenChart segment 'EQ' """
-    time.sleep(random.uniform(0.1, 0.3))
+def fetch_yfinance_data(symbol):
+    """ Fallback fetcher using Yahoo Finance """
     try:
-        data = None
-        # Lookback over last 3 days to handle holidays/weekends smoothly
+        yf_ticker = f"{symbol}.NS"
+        df = yf.download(yf_ticker, period="5d", interval="5m", progress=False)
+        if df is None or df.empty:
+            return None
+        
+        # Standardize MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        
+        # Get latest trading day data
+        df.index = pd.to_datetime(df.index)
+        latest_date = df.index.max().date()
+        df_day = df[df.index.date == latest_date].copy()
+        
+        return df_day
+    except Exception:
+        return None
+
+def process_single_symbol(symbol):
+    """ Fetch candles with OpenChart + YFinance Fallback """
+    time.sleep(random.uniform(0.1, 0.3))
+    data = None
+    try:
+        # Attempt 1: OpenChart API
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
-                # Segment explicitly set to 'EQ' as expected by OpenChart
                 data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
                 if data is not None and not data.empty:
                     break
             except Exception:
                 continue
+    except Exception:
+        data = None
 
-        if data is None or data.empty or len(data) < 3:
-            return None
+    # Attempt 2: YFinance Fallback if OpenChart failed / blocked
+    if data is None or data.empty:
+        data = fetch_yfinance_data(symbol)
 
-        # Standardize DataFrame columns
-        data.columns = [str(c).strip().lower() for c in data.columns]
-        
-        # Datetime column indexing
-        if "timestamp" in data.columns:
-            data["datetime"] = pd.to_datetime(data["timestamp"])
-            data = data.set_index("datetime")
-        elif "date" in data.columns:
-            data["datetime"] = pd.to_datetime(data["date"])
-            data = data.set_index("datetime")
-            
-        # Filter Market Hours (09:15 to 15:30)
-        if isinstance(data.index, pd.DatetimeIndex):
-            data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
-                        (data.index.time <= pd.Timestamp("15:30").time())]
+    if data is None or data.empty or len(data) < 3:
+        return None
 
-        if len(data) < 3:
-            return None
+    # Standardize DataFrame columns
+    data.columns = [str(c).strip().lower() for c in data.columns]
+    
+    # Datetime column indexing
+    if "timestamp" in data.columns:
+        data["datetime"] = pd.to_datetime(data["timestamp"])
+        data = data.set_index("datetime")
+    elif "date" in data.columns:
+        data["datetime"] = pd.to_datetime(data["date"])
+        data = data.set_index("datetime")
 
+    # Filter Market Hours (09:15 to 15:30)
+    if isinstance(data.index, pd.DatetimeIndex):
+        data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
+                    (data.index.time <= pd.Timestamp("15:30").time())]
+
+    if len(data) < 3:
+        return None
+
+    try:
         orb_candles = data.iloc[:3]
         orb_high = float(orb_candles["high"].max())
         orb_low = float(orb_candles["low"].min())
@@ -95,7 +125,6 @@ def process_single_symbol(symbol):
         scan_data = data.iloc[3:].copy()
         for ts, row in scan_data.iterrows():
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
-            
             time_str = ts.strftime("%H:%M") if hasattr(ts, 'strftime') else str(ts)
             
             if high >= orb_high:
@@ -105,9 +134,9 @@ def process_single_symbol(symbol):
             if low <= orb_low:
                 pct = round(((close - day_open) / day_open) * 100, 2)
                 return {"symbol": symbol, "signal": "SELL", "time": time_str, "price": round(close, 2), "pct": pct}
-
     except Exception:
         return None
+
     return None
 
 # ============================================================
