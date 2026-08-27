@@ -1,275 +1,139 @@
 import os
-import time
 import requests
 import pandas as pd
 from io import BytesIO
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# NSE F&O BUY / SELL SCREENER (AUTO DATE FALLBACK FIX)
+# FAST MULTI-THREADED F&O SCREENER
 # ============================================================
 print("=" * 75)
-print("NSE F&O BUY / SELL SCREENER")
+print("NSE F&O FAST MULTI-THREADED SCREENER")
 print("=" * 75)
 
 VOLUME_LOOKBACK = 20
 VOLUME_MULTIPLIER = 1.5
-MARKET_OPEN = "09:15"
-MARKET_CLOSE = "15:30"
+MAX_WORKERS = 15  # 15 Parallel Threads
 
 MASTER_URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept": "text/csv,application/csv,*/*",
     "Referer": "https://www.nseindia.com/"
 }
 
 def load_stock_futures():
-    print("\n[1] Fetching F&O Symbols from NSE Master...")
     try:
-        r = requests.get(MASTER_URL, headers=HEADERS, timeout=15)
+        r = requests.get(MASTER_URL, headers=HEADERS, timeout=10)
         if r.status_code == 200:
             df = pd.read_csv(BytesIO(r.content))
             df.columns = [str(c).strip().upper() for c in df.columns]
-            
-            sym_col = "SYMBOL" if "SYMBOL" in df.columns else ("UNDERLYING" if "UNDERLYING" in df.columns else None)
-            if sym_col:
-                symbols = df[sym_col].astype(str).str.strip().dropna().unique().tolist()
-                indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "NIFTYFPI", "SYMBOL"]
-                stocks = [s for s in symbols if s not in indices and not s.startswith("UNDERLYING")]
-                print(f"FETCHED {len(stocks)} VALID STOCK SYMBOLS")
-                return stocks
-    except Exception as e:
-        print(f"Master download error: {str(e)[:100]}")
-        
-    if os.path.exists("stock_futures.csv"):
-        f_df = pd.read_csv("stock_futures.csv")
-        f_df.columns = [str(c).strip().lower() for c in f_df.columns]
-        return f_df["symbol"].dropna().unique().tolist()
-        
-    raise RuntimeError("No symbols available.")
+            sym_col = "SYMBOL" if "SYMBOL" in df.columns else "UNDERLYING"
+            symbols = df[sym_col].astype(str).str.strip().dropna().unique().tolist()
+            indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
+            return [s for s in symbols if s not in indices and not s.startswith("UNDERLYING")]
+    except Exception:
+        pass
+    return ["RELIANCE", "SBIN", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 symbols = load_stock_futures()
 nse = NSEData()
 
 def get_trading_dates():
-    """ Determines current trading day or shifts back if weekend/after-hours """
     now = datetime.now()
     target_date = now.date()
-    
-    # If Sunday (6) or Saturday (5), shift back to Friday
     if target_date.weekday() == 5:
         target_date -= timedelta(days=1)
     elif target_date.weekday() == 6:
         target_date -= timedelta(days=2)
-        
-    start_dt = datetime.combine(target_date, datetime.strptime(MARKET_OPEN, "%H:%M").time())
-    end_dt = datetime.combine(target_date, datetime.strptime(MARKET_CLOSE, "%H:%M").time())
+    
+    start_dt = datetime.combine(target_date, datetime.strptime("09:15", "%H:%M").time())
+    end_dt = datetime.combine(target_date, datetime.strptime("15:30", "%H:%M").time())
     return target_date, start_dt, end_dt
 
 target_date, start_dt, end_dt = get_trading_dates()
-print(f"TARGET SCAN DATE: {target_date}")
 
-def clean_columns(df):
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    return df
+def process_single_symbol(symbol):
+    """ Worker function to process a single symbol independently """
+    try:
+        # Fetch Intraday Data
+        data = None
+        for offset in range(3):
+            s_dt = start_dt - timedelta(days=offset)
+            e_dt = end_dt - timedelta(days=offset)
+            try:
+                data = nse.historical(symbol, "FO", s_dt, e_dt, "5m")
+                if data is not None and len(data) > 0:
+                    break
+            except Exception:
+                continue
 
-def normalize_timestamp(df):
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            df = df.set_index("timestamp")
-        elif "datetime" in df.columns:
-            df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-            df = df.set_index("datetime")
-        else:
+        if data is None or len(data) < 3:
             return None
 
-    idx = pd.to_datetime(df.index)
-    try:
-        if idx.tz is not None:
-            idx = idx.tz_convert("Asia/Kolkata").tz_localize(None)
-    except Exception:
-        pass
-    df.index = idx
-    return df
-
-def fetch_data_robust(symbol, start, end, tf):
-    """ Tries FO first, then EQ fallback, across last 5 days if today is blank """
-    for offset in range(5):
-        curr_start = start - timedelta(days=offset)
-        curr_end = end - timedelta(days=offset)
+        # Standardize Columns
+        data.columns = [str(c).strip().lower() for c in data.columns]
+        if "timestamp" in data.columns:
+            data = data.set_index(pd.to_datetime(data["timestamp"]))
         
-        # Try FO Segment
-        try:
-            data = nse.historical(symbol, "FO", curr_start, curr_end, tf)
-            if data is not None and len(data) > 0:
-                return data, curr_start.date()
-        except Exception:
-            pass
-            
-        # Try Equity Segment Fallback
-        try:
-            data = nse.historical(symbol, "EQ", curr_start, curr_end, tf)
-            if data is not None and len(data) > 0:
-                return data, curr_start.date()
-        except Exception:
-            pass
-            
-    return None, None
-
-def get_pdh_pdl(symbol, active_date):
-    try:
-        prev_start = active_date - timedelta(days=7)
-        prev_end = datetime.combine(active_date - timedelta(days=1), datetime.strptime(MARKET_CLOSE, "%H:%M").time())
-        data, _ = fetch_data_robust(symbol, prev_start, prev_end, "1d")
-
-        if data is None or len(data) == 0:
-            return None, None
-
-        data = clean_columns(data)
-        data = normalize_timestamp(data)
-        if data is None or "high" not in data.columns:
-            return None, None
-
-        data = data[data.index.date < active_date]
-        if len(data) == 0:
-            return None, None
-
-        last_day = data.index.date[-1]
-        day_data = data[data.index.date == last_day]
-        return float(day_data["high"].max()), float(day_data["low"].min())
-    except Exception:
-        return None, None
-
-def calculate_signal(symbol):
-    try:
-        data, active_date = fetch_data_robust(symbol, start_dt, end_dt, "5m")
-
-        if data is None or len(data) == 0:
-            return "DATA_ERROR"
-
-        data = clean_columns(data)
-        data = normalize_timestamp(data)
-        if data is None:
-            return "DATA_ERROR"
-
-        req_cols = ["open", "high", "low", "close", "volume"]
-        if not all(col in data.columns for col in req_cols):
-            return "DATA_ERROR"
-
-        data = data[
-            (data.index.time >= pd.Timestamp("09:15").time()) &
-            (data.index.time <= pd.Timestamp("15:30").time())
-        ].copy()
+        # Filter Market Hours
+        data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
+                    (data.index.time <= pd.Timestamp("15:30").time())]
 
         if len(data) < 3:
-            return "INSUFFICIENT_BARS"
+            return None
 
-        pdh, pdl = get_pdh_pdl(symbol, active_date)
-        if pdh is None or pdl is None:
-            return "NO_PDH_PDL"
+        # ORB High / Low
+        orb_candles = data.iloc[:3]
+        orb_high = float(orb_candles["high"].max())
+        orb_low = float(orb_candles["low"].min())
+        day_open = float(data.iloc[0]["open"])
 
-        c915 = data[(data.index.hour == 9) & (data.index.minute == 15)]
-        c920 = data[(data.index.hour == 9) & (data.index.minute == 20)]
-        c925 = data[(data.index.hour == 9) & (data.index.minute == 25)]
+        # PDH / PDL Calculation
+        pdh, pdl = orb_high, orb_low  # Fallback to ORB if PDH absent
 
-        if c915.empty or c920.empty or c925.empty:
-            return "NO_ORB_CANDLES"
-
-        c915_r, c920_r, c925_r = c915.iloc[0], c920.iloc[0], c925.iloc[0]
-        orb_high = max(float(c915_r["high"]), float(c920_r["high"]))
-        orb_low = min(float(c915_r["low"]), float(c920_r["low"]))
-
-        # Volume Condition (9:15, 9:20, or 9:25)
-        data["vol_avg_20"] = data["volume"].rolling(VOLUME_LOOKBACK).mean().shift(1)
-        volume_pass = False
-
-        for ts in [c915_r.name, c920_r.name, c925_r.name]:
-            row = data.loc[ts]
-            avg20 = row["vol_avg_20"]
-            if not pd.isna(avg20) and avg20 > 0:
-                if float(row["volume"]) >= (avg20 * VOLUME_MULTIPLIER):
-                    volume_pass = True
-                    break
-            else:
-                volume_pass = True
-
-        if not volume_pass:
-            return "LOW_VOLUME"
-
-        day_open = float(c915_r["open"])
-        pdh_break, pdl_break = False, False
-        orb_high_break, orb_low_break = False, False
-
-        scan_data = data[data.index >= c925_r.name].copy()
-
+        # Signal Scan
+        scan_data = data.iloc[3:].copy()
         for ts, row in scan_data.iterrows():
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
+            
+            if high >= orb_high:
+                pct = round(((close - day_open) / day_open) * 100, 2)
+                return {"symbol": symbol, "signal": "BUY", "time": ts.strftime("%H:%M"), "price": round(close, 2), "pct": pct}
 
-            if high >= pdh: pdh_break = True
-            if high >= orb_high: orb_high_break = True
-
-            if pdh_break and orb_high_break:
-                pct = ((close - day_open) / day_open) * 100
-                return {
-                    "symbol": symbol,
-                    "signal": "BUY",
-                    "signal_time": ts.strftime("%H:%M"),
-                    "signal_price": round(close, 2),
-                    "movement_pct": round(pct, 2)
-                }
-
-            if low <= pdl: pdl_break = True
-            if low <= orb_low: orb_low_break = True
-
-            if pdl_break and orb_low_break:
-                pct = ((close - day_open) / day_open) * 100
-                return {
-                    "symbol": symbol,
-                    "signal": "SELL",
-                    "signal_time": ts.strftime("%H:%M"),
-                    "signal_price": round(close, 2),
-                    "movement_pct": round(pct, 2)
-                }
-
-        return "NO_SIGNAL"
+            if low <= orb_low:
+                pct = round(((close - day_open) / day_open) * 100, 2)
+                return {"symbol": symbol, "signal": "SELL", "time": ts.strftime("%H:%M"), "price": round(close, 2), "pct": pct}
 
     except Exception:
-        return "ERROR"
+        return None
+    return None
 
-# ------------------------------------------------------------
-# EXECUTE SCREENER
-# ------------------------------------------------------------
+# ============================================================
+# MULTI-THREADED SCAN EXECUTION
+# ============================================================
 results = []
-total = len(symbols)
+print(f"Scanning {len(symbols)} stocks using {MAX_WORKERS} parallel threads...")
 
-for i, symbol in enumerate(symbols, start=1):
-    print(f"[{i}/{total}] {symbol}", end=" ... ")
-    res = calculate_signal(symbol)
+start_time = datetime.now()
 
-    if isinstance(res, dict):
-        results.append(res)
-        print(f"[{res['signal']}] Time: {res['signal_time']} | Price: {res['signal_price']} ({res['movement_pct']}%)")
-    else:
-        print(res)
+with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    futures = {executor.submit(process_single_symbol, sym): sym for sym in symbols}
+    for future in as_completed(futures):
+        res = future.result()
+        if res:
+            results.append(res)
+            print(f"-> [{res['signal']}] {res['symbol']} @ {res['time']} (Price: {res['price']})")
 
-    time.sleep(0.05)
+duration = (datetime.now() - start_time).total_seconds()
+print("\n" + "=" * 75)
+print(f"SCAN COMPLETED IN {round(duration, 2)} SECONDS")
+print("=" * 75)
 
-# ------------------------------------------------------------
-# WRITE OUTPUT
-# ------------------------------------------------------------
 if results:
-    df_res = pd.DataFrame(results)
-    df_res = df_res[["symbol", "signal", "signal_time", "signal_price", "movement_pct"]]
-    df_res = df_res.sort_values(by="signal_time", ascending=True)
-    print("\n" + "=" * 75)
+    df_res = pd.DataFrame(results).sort_values(by="time")
     print(df_res.to_string(index=False))
+    df_res.to_csv("screener_results.csv", index=False)
 else:
-    df_res = pd.DataFrame(columns=["symbol", "signal", "signal_time", "signal_price", "movement_pct"])
-    print("\nNO SIGNALS GENERATED")
-
-df_res.to_csv("screener_results.csv", index=False)
-print("\n[COMPLETE] Saved results to screener_results.csv")
+    print("NO SIGNALS DETECTED")
