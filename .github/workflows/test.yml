@@ -16,15 +16,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check Python
+      - name: Install packages
         run: |
-          python --version
-          pip --version
+          pip install pandas requests openchart
 
-      - name: Install basic packages
+      - name: Run OpenChart test
         run: |
-          pip install pandas requests
-
-      - name: Test
-        run: |
-          python -c "import pandas, requests; print('PYTHON + PACKAGES OK')"
+          python test_openchart.py
