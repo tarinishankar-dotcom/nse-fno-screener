@@ -1,20 +1,26 @@
 import os
 import time
 import random
+import urllib.request
 import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ============================================================
+# BROWSER HEADER PATCH FOR OPENCHART (BYPASS CLOUD BLOCK)
+# ============================================================
+class AppURLopener(urllib.request.FancyURLopener):
+    version = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+urllib.request._urlopener = AppURLopener()
+
 from openchart import NSEData
 
-# ============================================================
-# HYBRID F&O SCREENER (OPENCHART + YFINANCE FALLBACK)
-# ============================================================
 print("=" * 75)
-print("NSE F&O SCREENER (CLOUD BLOCK-PROOF WITH YFINANCE)")
+print("NSE F&O SCREENER (PURE OPENCHART F&O ENGINE)")
 print("=" * 75)
 
-MAX_WORKERS = 3
+MAX_WORKERS = 2  # Rate-limit safety for free cloud runner
 
 def load_stock_futures():
     """ Load symbols directly from local stock_futures.csv """
@@ -49,74 +55,54 @@ def get_trading_dates():
 
 target_date, start_dt, end_dt = get_trading_dates()
 
-def fetch_yfinance_data(symbol):
-    """ Fallback fetcher using Yahoo Finance """
-    try:
-        yf_ticker = f"{symbol}.NS"
-        df = yf.download(yf_ticker, period="5d", interval="5m", progress=False)
-        if df is None or df.empty:
-            return None
-        
-        # Standardize MultiIndex columns if present
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        
-        # Get latest trading day data
-        df.index = pd.to_datetime(df.index)
-        latest_date = df.index.max().date()
-        df_day = df[df.index.date == latest_date].copy()
-        
-        return df_day
-    except Exception:
-        return None
-
 def process_single_symbol(symbol):
-    """ Fetch candles with OpenChart + YFinance Fallback """
-    time.sleep(random.uniform(0.1, 0.3))
-    data = None
+    """ Fetch 5m candles using OpenChart with FO segment """
+    time.sleep(random.uniform(0.3, 0.7)) # Human delay simulation
     try:
-        # Attempt 1: OpenChart API
+        data = None
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
-                data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
+                # Segment explicitly set to 'FO' for Futures & Options
+                data = nse.historical(symbol, "FO", s_dt, e_dt, "5m")
                 if data is not None and not data.empty:
                     break
             except Exception:
                 continue
-    except Exception:
-        data = None
 
-    # Attempt 2: YFinance Fallback if OpenChart failed / blocked
-    if data is None or data.empty:
-        data = fetch_yfinance_data(symbol)
+        if data is None or data.empty or len(data) < 3:
+            # Fallback to EQ segment via OpenChart if FO ticker formatting varies
+            for offset in range(3):
+                s_dt = start_dt - timedelta(days=offset)
+                e_dt = end_dt - timedelta(days=offset)
+                try:
+                    data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
+                    if data is not None and not data.empty:
+                        break
+                except Exception:
+                    continue
 
-    if data is None or data.empty or len(data) < 3:
-        return None
+        if data is None or data.empty or len(data) < 3:
+            return None
 
-    # Standardize DataFrame columns
-    data.columns = [str(c).strip().lower() for c in data.columns]
-    
-    # Datetime column indexing
-    if "timestamp" in data.columns:
-        data["datetime"] = pd.to_datetime(data["timestamp"])
-        data = data.set_index("datetime")
-    elif "date" in data.columns:
-        data["datetime"] = pd.to_datetime(data["date"])
-        data = data.set_index("datetime")
+        # Standardize DataFrame columns
+        data.columns = [str(c).strip().lower() for c in data.columns]
+        
+        if "timestamp" in data.columns:
+            data["datetime"] = pd.to_datetime(data["timestamp"])
+            data = data.set_index("datetime")
+        elif "date" in data.columns:
+            data["datetime"] = pd.to_datetime(data["date"])
+            data = data.set_index("datetime")
+            
+        if isinstance(data.index, pd.DatetimeIndex):
+            data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
+                        (data.index.time <= pd.Timestamp("15:30").time())]
 
-    # Filter Market Hours (09:15 to 15:30)
-    if isinstance(data.index, pd.DatetimeIndex):
-        data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
-                    (data.index.time <= pd.Timestamp("15:30").time())]
+        if len(data) < 3:
+            return None
 
-    if len(data) < 3:
-        return None
-
-    try:
         orb_candles = data.iloc[:3]
         orb_high = float(orb_candles["high"].max())
         orb_low = float(orb_candles["low"].min())
@@ -134,9 +120,9 @@ def process_single_symbol(symbol):
             if low <= orb_low:
                 pct = round(((close - day_open) / day_open) * 100, 2)
                 return {"symbol": symbol, "signal": "SELL", "time": time_str, "price": round(close, 2), "pct": pct}
+
     except Exception:
         return None
-
     return None
 
 # ============================================================
