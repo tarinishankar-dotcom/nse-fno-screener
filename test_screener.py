@@ -1,41 +1,32 @@
 import os
 import time
-import requests
 import pandas as pd
-from io import BytesIO
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 from openchart import NSEData
 
-# ============================================================
-# NSE F&O BUY / SELL SCREENER
-# PDH + PDL + ORB + 20 PERIOD 1.5X VOLUME
-# ============================================================
-
-print("=" * 75)
+print("=" * 70)
 print("NSE F&O BUY / SELL SCREENER")
-print("=" * 75)
+print("SEP-26 FUTURES + PDH/PDL + ORB + VOLUME")
+print("=" * 70)
 
 # ============================================================
 # SETTINGS
 # ============================================================
 
-ORB_FIRST = "09:15"
+ORB_START = "09:15"
 ORB_SECOND = "09:20"
-VOLUME_CHECK_CANDLES = ["09:15", "09:20", "09:25"]
+VOLUME_CHECK = ["09:15", "09:20", "09:25"]
 
 VOLUME_LOOKBACK = 20
 VOLUME_MULTIPLIER = 1.5
 
-MARKET_OPEN = "09:15"
-MARKET_CLOSE = "15:30"
-
-IST = "Asia/Kolkata"
-
 # ============================================================
-# NSE MASTER
+# LOAD FUTURES MASTER
 # ============================================================
 
-MASTER_URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
+print("\n[1] DOWNLOADING NSE F&O MASTER...")
+
+URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -43,88 +34,75 @@ HEADERS = {
     "Referer": "https://www.nseindia.com/"
 }
 
+import requests
+from io import BytesIO
 
-def load_stock_futures():
+r = requests.get(URL, headers=HEADERS, timeout=30)
 
-    print("\n[1] DOWNLOADING NSE F&O MASTER...")
+print("HTTP STATUS:", r.status_code)
 
-    r = requests.get(
-        MASTER_URL,
-        headers=HEADERS,
-        timeout=30
-    )
+if r.status_code != 200:
+    raise Exception("NSE master download failed")
 
-    print("HTTP STATUS:", r.status_code)
-    print("DATA SIZE:", len(r.content), "bytes")
+master = pd.read_csv(BytesIO(r.content))
+master.columns = [str(c).strip() for c in master.columns]
 
-    if r.status_code != 200:
-        raise Exception(
-            f"NSE master download failed: HTTP {r.status_code}"
-        )
+# ============================================================
+# CLEAN MASTER
+# ============================================================
 
-    df = pd.read_csv(BytesIO(r.content))
+underlying_col = master.columns[0]
+symbol_col = master.columns[1]
 
-    df.columns = [
-        str(c).strip()
-        for c in df.columns
-    ]
+master[underlying_col] = (
+    master[underlying_col]
+    .astype(str)
+    .str.strip()
+)
 
-    for col in df.columns:
-        if df[col].dtype == "object":
-            df[col] = (
-                df[col]
-                .astype(str)
-                .str.strip()
-            )
+master[symbol_col] = (
+    master[symbol_col]
+    .astype(str)
+    .str.strip()
+)
 
-    underlying_col = df.columns[0]
-    symbol_col = df.columns[1]
+# Remove header accidentally read as data
+master = master[
+    master[symbol_col].str.lower() != "symbol"
+].copy()
 
-    df = df[
-        (df[underlying_col].notna()) &
-        (df[symbol_col].notna())
-    ].copy()
+# Remove blanks
+master = master[
+    (master[symbol_col] != "") &
+    (master[symbol_col].notna())
+].copy()
 
-    df[underlying_col] = (
-        df[underlying_col]
-        .astype(str)
-        .str.strip()
-    )
+# ============================================================
+# INDEX SYMBOLS
+# ============================================================
 
-    df[symbol_col] = (
-        df[symbol_col]
-        .astype(str)
-        .str.strip()
-    )
+index_symbols = {
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "NIFTYNXT50",
+    "NIFTYFPI"
+}
 
-    index_symbols = {
-        "NIFTY",
-        "BANKNIFTY",
-        "FINNIFTY",
-        "MIDCPNIFTY",
-        "NIFTYNXT50",
-        "NIFTYFPI"
-    }
+stock_master = master[
+    ~master[symbol_col].str.upper().isin(index_symbols)
+].copy()
 
-    stocks = df[
-        ~df[symbol_col]
-        .str.upper()
-        .isin(index_symbols)
-    ].copy()
+symbols = (
+    stock_master[symbol_col]
+    .astype(str)
+    .str.strip()
+    .drop_duplicates()
+    .tolist()
+)
 
-    stocks = stocks.drop_duplicates(
-        subset=[symbol_col]
-    )
-
-    symbols = (
-        stocks[symbol_col]
-        .tolist()
-    )
-
-    print("STOCK FUTURES FOUND:", len(symbols))
-
-    return symbols
-
+print("STOCK FUTURES FOUND:", len(symbols))
 
 # ============================================================
 # OPENCHART
@@ -136,33 +114,25 @@ nse = NSEData()
 
 print("OpenChart initialized")
 
-
 # ============================================================
 # DATE
 # ============================================================
 
 today = datetime.now().date()
 
-start_dt = datetime.combine(
+start = datetime.combine(
     today,
-    datetime.strptime(
-        MARKET_OPEN,
-        "%H:%M"
-    ).time()
+    datetime.strptime("09:15", "%H:%M").time()
 )
 
-end_dt = datetime.combine(
+end = datetime.combine(
     today,
-    datetime.strptime(
-        MARKET_CLOSE,
-        "%H:%M"
-    ).time()
+    datetime.strptime("15:30", "%H:%M").time()
 )
 
 print("DATE:", today)
-print("START:", start_dt)
-print("END:", end_dt)
-
+print("START:", start)
+print("END:", end)
 
 # ============================================================
 # HELPERS
@@ -184,10 +154,7 @@ def normalize_timestamp(df):
 
     df = df.copy()
 
-    if not isinstance(
-        df.index,
-        pd.DatetimeIndex
-    ):
+    if not isinstance(df.index, pd.DatetimeIndex):
 
         if "timestamp" in df.columns:
 
@@ -208,14 +175,9 @@ def normalize_timestamp(df):
             df = df.set_index("datetime")
 
         else:
-            raise ValueError(
-                "Timestamp not found"
-            )
+            return None
 
-    idx = pd.to_datetime(
-        df.index,
-        errors="coerce"
-    )
+    idx = pd.to_datetime(df.index)
 
     try:
 
@@ -223,7 +185,7 @@ def normalize_timestamp(df):
 
             idx = (
                 idx
-                .tz_convert(IST)
+                .tz_convert("Asia/Kolkata")
                 .tz_localize(None)
             )
 
@@ -232,14 +194,76 @@ def normalize_timestamp(df):
 
     df.index = idx
 
-    df = df[
-        ~df.index.isna()
+    df = df[~df.index.isna()]
+
+    return df
+
+
+# ============================================================
+# FUTURES CONTRACT
+# ============================================================
+
+def get_near_future(symbol):
+
+    """
+    Current near-month contract.
+
+    On 27-Aug-2026 this should select SEP-26.
+    After September expiry it should automatically move
+    to the next available contract.
+    """
+
+    row = stock_master[
+        stock_master[symbol_col].str.upper()
+        == symbol.upper()
     ]
 
-    return df.sort_index()
+    if row.empty:
+        return None
+
+    row = row.iloc[0]
+
+    # Futures expiry columns are after first two columns.
+    expiry_columns = list(master.columns[2:])
+
+    for col in expiry_columns:
+
+        value = row[col]
+
+        if pd.isna(value):
+            continue
+
+        value = str(value).strip()
+
+        if value == "":
+            continue
+
+        # First available contract = near month
+        return value
+
+    return None
 
 
-def get_ohlcv(symbol, start, end, interval):
+# ============================================================
+# FETCH DATA
+# ============================================================
+
+def get_intraday(symbol):
+
+    """
+    Try OpenChart using the underlying symbol first.
+    If OpenChart supports expiry-specific symbol,
+    try symbol + expiry.
+    """
+
+    expiry = get_near_future(symbol)
+
+    if expiry is None:
+        return None, None
+
+    # --------------------------------------------------------
+    # TRY UNDERLYING
+    # --------------------------------------------------------
 
     try:
 
@@ -248,18 +272,155 @@ def get_ohlcv(symbol, start, end, interval):
             "FO",
             start,
             end,
-            interval
+            "5m"
         )
 
-        if data is None:
-            return None
+        if data is not None and len(data) > 0:
 
-        if len(data) == 0:
+            return data, expiry
+
+    except Exception as e:
+
+        pass
+
+    # --------------------------------------------------------
+    # TRY SYMBOL + EXPIRY
+    # --------------------------------------------------------
+
+    candidates = [
+        f"{symbol}{expiry}",
+        f"{symbol}-{expiry}",
+        f"{symbol} {expiry}",
+    ]
+
+    for contract in candidates:
+
+        try:
+
+            data = nse.historical(
+                contract,
+                "FO",
+                start,
+                end,
+                "5m"
+            )
+
+            if data is not None and len(data) > 0:
+
+                return data, expiry
+
+        except Exception:
+
+            continue
+
+    return None, expiry
+
+
+# ============================================================
+# PREVIOUS DAY HIGH / LOW
+# ============================================================
+
+def get_previous_day_high_low(symbol):
+
+    try:
+
+        prev_start = today - timedelta(days=10)
+
+        data, expiry = get_intraday(symbol)
+
+        if data is None or len(data) == 0:
+            return None, None
+
+        data = clean_columns(data)
+        data = normalize_timestamp(data)
+
+        if data is None:
+            return None, None
+
+        if "high" not in data.columns:
+            return None, None
+
+        if "low" not in data.columns:
+            return None, None
+
+        # Since current-day request may only return today's
+        # candles, request daily history separately.
+
+        daily_start = datetime.combine(
+            prev_start,
+            datetime.strptime("09:15", "%H:%M").time()
+        )
+
+        daily_end = datetime.combine(
+            today,
+            datetime.strptime("15:30", "%H:%M").time()
+        )
+
+        daily = nse.historical(
+            symbol,
+            "FO",
+            daily_start,
+            daily_end,
+            "1d"
+        )
+
+        if daily is None or len(daily) == 0:
+            return None, None
+
+        daily = clean_columns(daily)
+        daily = normalize_timestamp(daily)
+
+        if daily is None:
+            return None, None
+
+        daily = daily[daily.index.date < today]
+
+        if daily.empty:
+            return None, None
+
+        last_date = daily.index.date[-1]
+
+        previous = daily[
+            daily.index.date == last_date
+        ]
+
+        if previous.empty:
+            return None, None
+
+        pdh = float(previous["high"].max())
+        pdl = float(previous["low"].min())
+
+        return pdh, pdl
+
+    except Exception as e:
+
+        return None, None
+
+
+# ============================================================
+# SIGNAL CALCULATION
+# ============================================================
+
+def calculate_signal(symbol):
+
+    try:
+
+        # ----------------------------------------------------
+        # GET 5-MIN DATA
+        # ----------------------------------------------------
+
+        data, expiry = get_intraday(symbol)
+
+        if data is None or len(data) == 0:
+
+            print("NO DATA", end=" ")
             return None
 
         data = clean_columns(data)
-
         data = normalize_timestamp(data)
+
+        if data is None:
+            return None
 
         required = [
             "open",
@@ -274,289 +435,57 @@ def get_ohlcv(symbol, start, end, interval):
             if col not in data.columns:
                 return None
 
-        return data
-
-    except Exception as e:
-
-        print(
-            "DATA ERROR:",
-            str(e)[:100]
-        )
-
-        return None
-
-
-# ============================================================
-# CURRENT FUTURE CONTRACT DISCOVERY
-# ============================================================
-
-def discover_future_contract(underlying):
-
-    """
-    Try OpenChart search for current FO contract.
-
-    Different OpenChart versions may return slightly
-    different structures, therefore this function handles
-    common response formats.
-    """
-
-    try:
-
-        result = nse.search(
-            underlying,
-            "FO"
-        )
-
-        if result is None:
-            return None
-
-        # ----------------------------------------------------
-        # DataFrame response
-        # ----------------------------------------------------
-
-        if isinstance(result, pd.DataFrame):
-
-            if len(result) == 0:
-                return None
-
-            temp = result.copy()
-
-            temp.columns = [
-                str(c).strip().lower()
-                for c in temp.columns
-            ]
-
-            # Look for rows containing FUT
-            text = temp.astype(str).agg(
-                " ".join,
-                axis=1
-            )
-
-            fut_rows = temp[
-                text.str.upper().str.contains(
-                    "FUT",
-                    na=False
-                )
-            ]
-
-            if len(fut_rows) == 0:
-                fut_rows = temp
-
-            # Try symbol columns
-            possible_symbol_cols = [
-                "symbol",
-                "tradingsymbol",
-                "name",
-                "ticker"
-            ]
-
-            for col in possible_symbol_cols:
-
-                if col in fut_rows.columns:
-
-                    for value in fut_rows[col]:
-
-                        value = str(value).strip()
-
-                        if "FUT" in value.upper():
-
-                            return value
-
-        # ----------------------------------------------------
-        # Dictionary / list response
-        # ----------------------------------------------------
-
-        if isinstance(result, dict):
-
-            values = [result]
-
-        elif isinstance(result, list):
-
-            values = result
-
-        else:
-
-            values = []
-
-        candidates = []
-
-        for item in values:
-
-            if isinstance(item, dict):
-
-                for key, value in item.items():
-
-                    text = str(value).strip()
-
-                    if (
-                        "FUT" in text.upper()
-                        and underlying.upper()
-                        in text.upper()
-                    ):
-
-                        candidates.append(text)
-
-            else:
-
-                text = str(item).strip()
-
-                if (
-                    "FUT" in text.upper()
-                    and underlying.upper()
-                    in text.upper()
-                ):
-
-                    candidates.append(text)
-
-        if candidates:
-
-            # Prefer the first current-looking contract
-            return candidates[0]
-
-    except Exception as e:
-
-        print(
-            f"SEARCH ERROR {underlying}:",
-            str(e)[:100]
-        )
-
-    return None
-
-
-# ============================================================
-# PREVIOUS TRADING DAY PDH / PDL
-# ============================================================
-
-def get_pdh_pdl(contract):
-
-    try:
-
-        start_prev = (
-            datetime.combine(
-                today,
-                dt_time(9, 15)
-            )
-            - timedelta(days=10)
-        )
-
-        end_prev = datetime.combine(
-            today,
-            dt_time(15, 30)
-        )
-
-        data = get_ohlcv(
-            contract,
-            start_prev,
-            end_prev,
-            "1d"
-        )
-
-        if data is None:
-            return None, None
-
-        data = data[
-            data.index.date < today
-        ]
-
-        if len(data) == 0:
-            return None, None
-
-        last_date = data.index.date[-1]
-
-        day_data = data[
-            data.index.date == last_date
-        ]
-
-        if len(day_data) == 0:
-            return None, None
-
-        pdh = float(
-            day_data["high"].max()
-        )
-
-        pdl = float(
-            day_data["low"].min()
-        )
-
-        return pdh, pdl
-
-    except Exception as e:
-
-        print(
-            "PDH/PDL ERROR:",
-            str(e)[:100]
-        )
-
-        return None, None
-
-
-# ============================================================
-# SIGNAL CALCULATION
-# ============================================================
-
-def calculate_signal(underlying, contract):
-
-    try:
-
-        # ----------------------------------------------------
-        # 5 MIN DATA
-        # ----------------------------------------------------
-
-        data = get_ohlcv(
-            contract,
-            start_dt,
-            end_dt,
-            "5m"
-        )
-
-        if data is None:
-            return None
-
-        if len(data) < 25:
-            return None
-
         # ----------------------------------------------------
         # MARKET HOURS
         # ----------------------------------------------------
 
         data = data[
-            (
-                data.index.time
-                >= dt_time(9, 15)
-            )
+            (data.index.time >= pd.Timestamp(
+                "09:15"
+            ).time())
             &
-            (
-                data.index.time
-                <= dt_time(15, 30)
-            )
+            (data.index.time <= pd.Timestamp(
+                "15:30"
+            ).time())
         ].copy()
 
-        if len(data) < 3:
+        if data.empty:
             return None
 
         # ----------------------------------------------------
-        # REQUIRED CANDLES
+        # PDH / PDL
+        # ----------------------------------------------------
+
+        pdh, pdl = get_previous_day_high_low(symbol)
+
+        if pdh is None or pdl is None:
+            return None
+
+        # ----------------------------------------------------
+        # FIRST 3 CANDLES
+        # 09:15 / 09:20 / 09:25
         # ----------------------------------------------------
 
         candles = {}
 
-        for clock in VOLUME_CHECK_CANDLES:
+        for t in VOLUME_CHECK:
 
-            hh, mm = map(
-                int,
-                clock.split(":")
-            )
+            hh, mm = map(int, t.split(":"))
 
-            rows = data[
+            temp = data[
                 (data.index.hour == hh)
                 &
                 (data.index.minute == mm)
             ]
 
-            if rows.empty:
-                return None
+            if not temp.empty:
+                candles[t] = temp.iloc[0]
 
-            candles[clock] = rows.iloc[0]
+        if not all(
+            t in candles
+            for t in VOLUME_CHECK
+        ):
+            return None
 
         c915 = candles["09:15"]
         c920 = candles["09:20"]
@@ -564,8 +493,6 @@ def calculate_signal(underlying, contract):
 
         # ----------------------------------------------------
         # ORB
-        #
-        # 9:15 + 9:20
         # ----------------------------------------------------
 
         orb_high = max(
@@ -579,42 +506,30 @@ def calculate_signal(underlying, contract):
         )
 
         # ----------------------------------------------------
-        # 20 PERIOD VOLUME
+        # VOLUME 20 PERIOD
         #
-        # IMPORTANT:
-        # ANY ONE OF 9:15 / 9:20 / 9:25
-        # MUST BE >= 1.5 X 20 PERIOD AVG
+        # ANY ONE OF FIRST 3 CANDLES MUST BE >= 1.5X
         # ----------------------------------------------------
 
-        data["volume_avg20"] = (
+        data["avg20"] = (
             data["volume"]
-            .rolling(
-                VOLUME_LOOKBACK
-            )
+            .rolling(VOLUME_LOOKBACK)
             .mean()
             .shift(1)
         )
 
         volume_pass = False
 
-        for clock in VOLUME_CHECK_CANDLES:
+        for t in VOLUME_CHECK:
 
-            row = candles[clock]
+            row = candles[t]
 
-            ts = row.name
-
-            if ts not in data.index:
-                continue
-
-            avg20 = data.loc[
-                ts,
-                "volume_avg20"
-            ]
+            avg20 = row.get("avg20")
 
             if pd.isna(avg20):
                 continue
 
-            threshold = (
+            required_volume = (
                 float(avg20)
                 * VOLUME_MULTIPLIER
             )
@@ -623,269 +538,155 @@ def calculate_signal(underlying, contract):
                 row["volume"]
             )
 
-            if actual_volume >= threshold:
+            if actual_volume >= required_volume:
 
                 volume_pass = True
-
                 break
 
         if not volume_pass:
             return None
 
         # ----------------------------------------------------
-        # PDH / PDL
+        # 9:15 OPEN
         # ----------------------------------------------------
 
-        pdh, pdl = get_pdh_pdl(
-            contract
-        )
-
-        if pdh is None or pdl is None:
-            return None
+        day_open = float(c915["open"])
 
         # ----------------------------------------------------
-        # DAY OPEN
+        # SCAN AFTER 9:25
         # ----------------------------------------------------
 
-        day_open = float(
-            c915["open"]
-        )
-
-        # ----------------------------------------------------
-        # SCAN FROM 9:25 ONWARD
-        #
-        # PDH + ORB HIGH
-        # OR
-        # PDL + ORB LOW
-        #
-        # Conditions may occur on different candles.
-        # Both must eventually be satisfied.
-        # ----------------------------------------------------
-
-        pdh_broken = False
-        orb_high_broken = False
-
-        pdl_broken = False
-        orb_low_broken = False
-
-        buy_signal = None
-        sell_signal = None
-
-        scan_data = data[
+        scan = data[
             data.index >= c925.name
-        ]
+        ].copy()
 
-        for ts, row in scan_data.iterrows():
+        buy_pdh = False
+        buy_orb = False
 
-            high = float(
-                row["high"]
-            )
+        sell_pdl = False
+        sell_orb = False
 
-            low = float(
-                row["low"]
-            )
+        for ts, row in scan.iterrows():
 
-            close = float(
-                row["close"]
-            )
+            high = float(row["high"])
+            low = float(row["low"])
+            close = float(row["close"])
 
+            # =================================================
             # BUY
+            # =================================================
+
             if high >= pdh:
-                pdh_broken = True
+                buy_pdh = True
 
             if high >= orb_high:
-                orb_high_broken = True
+                buy_orb = True
 
-            if (
-                pdh_broken
-                and orb_high_broken
-                and buy_signal is None
-            ):
+            if buy_pdh and buy_orb:
 
-                buy_signal = {
-                    "time": ts,
-                    "price": close
+                movement = (
+                    (close - day_open)
+                    / day_open
+                ) * 100
+
+                return {
+                    "symbol": symbol,
+                    "signal": "BUY",
+                    "signal_time": ts.strftime("%H:%M"),
+                    "signal_price": round(close, 2),
+                    "movement_pct": round(
+                        movement,
+                        2
+                    )
                 }
 
+            # =================================================
             # SELL
+            # =================================================
+
             if low <= pdl:
-                pdl_broken = True
+                sell_pdl = True
 
             if low <= orb_low:
-                orb_low_broken = True
+                sell_orb = True
 
-            if (
-                pdl_broken
-                and orb_low_broken
-                and sell_signal is None
-            ):
+            if sell_pdl and sell_orb:
 
-                sell_signal = {
-                    "time": ts,
-                    "price": close
+                movement = (
+                    (close - day_open)
+                    / day_open
+                ) * 100
+
+                return {
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "signal_time": ts.strftime("%H:%M"),
+                    "signal_price": round(close, 2),
+                    "movement_pct": round(
+                        movement,
+                        2
+                    )
                 }
 
-            # First signal only
-            if (
-                buy_signal is not None
-                or sell_signal is not None
-            ):
-                break
-
-        # ----------------------------------------------------
-        # SELECT FIRST SIGNAL
-        # ----------------------------------------------------
-
-        selected = None
-
-        if buy_signal is not None:
-            selected = (
-                "BUY",
-                buy_signal
-            )
-
-        if sell_signal is not None:
-
-            if selected is None:
-
-                selected = (
-                    "SELL",
-                    sell_signal
-                )
-
-            elif (
-                sell_signal["time"]
-                < selected[1]["time"]
-            ):
-
-                selected = (
-                    "SELL",
-                    sell_signal
-                )
-
-        if selected is None:
-            return None
-
-        signal, info = selected
-
-        signal_time = info["time"]
-        signal_price = float(
-            info["price"]
-        )
-
-        movement = (
-            (
-                signal_price
-                - day_open
-            )
-            / day_open
-        ) * 100
-
-        return {
-            "symbol": underlying,
-            "signal": signal,
-            "signal_time": signal_time.strftime(
-                "%H:%M"
-            ),
-            "signal_price": round(
-                signal_price,
-                2
-            ),
-            "movement_pct": round(
-                movement,
-                2
-            )
-        }
+        return None
 
     except Exception as e:
 
         print(
-            f"CALC ERROR {underlying}:",
-            str(e)[:120]
+            f"ERROR: {str(e)[:100]}",
+            end=" "
         )
 
         return None
 
 
 # ============================================================
-# MAIN
+# SCAN
 # ============================================================
 
-symbols = load_stock_futures()
-
-print("\n" + "=" * 75)
-print("STARTING FULL STOCK FUTURES SCAN")
-print("=" * 75)
+print("\n")
+print("=" * 70)
+print("STARTING STOCK FUTURES SCAN")
+print("=" * 70)
 
 results = []
 
 total = len(symbols)
 
-for i, underlying in enumerate(
-    symbols,
-    start=1
-):
+for i, symbol in enumerate(symbols, 1):
 
     print(
-        f"[{i}/{total}] {underlying} ...",
-        end=""
+        f"[{i}/{total}] {symbol} ...",
+        end=" "
     )
 
-    # --------------------------------------------------------
-    # DISCOVER ACTUAL FUTURES CONTRACT
-    # --------------------------------------------------------
+    result = calculate_signal(symbol)
 
-    contract = discover_future_contract(
-        underlying
-    )
-
-    if contract is None:
-
-        print(
-            " FUT CONTRACT NOT FOUND"
-        )
-
-        continue
-
-    print(
-        f" {contract} ...",
-        end=""
-    )
-
-    # --------------------------------------------------------
-    # CALCULATE
-    # --------------------------------------------------------
-
-    result = calculate_signal(
-        underlying,
-        contract
-    )
-
-    if result is not None:
+    if result:
 
         results.append(result)
 
         print(
-            f" {result['signal']} "
-            f"{result['signal_time']} "
-            f"{result['signal_price']} "
-            f"{result['movement_pct']}%"
+            result["signal"],
+            result["signal_time"],
+            result["signal_price"]
         )
 
     else:
 
-        print(" NO SIGNAL")
+        print("NO SIGNAL")
 
-    time.sleep(0.20)
+    time.sleep(0.10)
 
 
 # ============================================================
 # FINAL RESULT
 # ============================================================
 
-print("\n" + "=" * 75)
+print("\n")
+print("=" * 70)
 print("FINAL SCREENER RESULT")
-print("=" * 75)
+print("=" * 70)
 
 columns = [
     "symbol",
@@ -897,14 +698,12 @@ columns = [
 
 if results:
 
-    result_df = pd.DataFrame(
-        results,
-        columns=columns
-    )
+    result_df = pd.DataFrame(results)
+
+    result_df = result_df[columns]
 
     result_df = result_df.sort_values(
-        by="signal_time",
-        ascending=True
+        by="signal_time"
     )
 
     print(
@@ -931,9 +730,10 @@ result_df.to_csv(
     index=False
 )
 
-print("\n" + "=" * 75)
+print("\n")
+print("=" * 70)
 print("FILE CREATED: screener_results.csv")
-print("=" * 75)
+print("=" * 70)
 
 print(
     "TOTAL SIGNALS:",
@@ -961,4 +761,3 @@ if len(result_df):
     )
 
 print("\nSTEP 4 COMPLETE")
-print("=" * 75)
