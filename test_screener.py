@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FIXED & DEBUG-READY NSE F&O SCREENER
+# FIXED NSE F&O SCREENER (EXACT OPENCHART SEGMENT SCRIPT)
 # ============================================================
 print("=" * 75)
 print("NSE F&O SCREENER (OPENCHART INTEGRATION)")
@@ -49,21 +49,17 @@ def get_trading_dates():
 target_date, start_dt, end_dt = get_trading_dates()
 
 def process_single_symbol(symbol):
-    """ Fetch candles with fallback logic """
+    """ Fetch candles with valid OpenChart segment 'EQ' """
     time.sleep(random.uniform(0.1, 0.3))
     try:
         data = None
-        # Try last 3 days to account for market holidays/weekends
+        # Lookback over last 3 days to handle holidays/weekends smoothly
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
-                # Primary call: exchange="NSE"
-                data = nse.historical(symbol, "NSE", s_dt, e_dt, "5m")
-                if data is None or data.empty:
-                    # Alternate call: exchange="NFO"
-                    data = nse.historical(symbol, "NFO", s_dt, e_dt, "5m")
-                
+                # Segment explicitly set to 'EQ' as expected by OpenChart
+                data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
                 if data is not None and not data.empty:
                     break
             except Exception:
@@ -140,4 +136,4 @@ if results:
     print(df_res.to_string(index=False))
     df_res.to_csv("screener_results.csv", index=False)
 else:
-    print("NO SIGNALS DETECTED (Data fetched or ORB Breakout criteria not met for today)")
+    print("NO SIGNALS DETECTED")
