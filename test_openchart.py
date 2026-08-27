@@ -1,50 +1,80 @@
 from openchart import NSEData
-import inspect
+import requests
 
-print("====================================")
-print("OPENCHART SEARCH DIAGNOSTIC")
-print("====================================")
+print("==========================================")
+print("NSE F&O MASTER DATA TEST")
+print("==========================================")
 
 nse = NSEData()
 
-print("\n=== segments() ===")
-try:
-    print(nse.segments())
-except Exception as e:
-    print("ERROR:", type(e).__name__, e)
+print("\nSEGMENTS:")
+print(nse.segments())
 
-print("\n=== timeframes() ===")
-try:
-    print(nse.timeframes())
-except Exception as e:
-    print("ERROR:", type(e).__name__, e)
+print("\nTIMEFRAMES:")
+print(nse.timeframes())
 
-print("\n=== search signature ===")
-print(inspect.signature(nse.search))
+print("\nSEARCH URL:")
+print(nse.search_url)
 
-print("\n=== search_url signature ===")
-print(inspect.signature(nse.search_url))
+print("\n==========================================")
+print("TESTING NSE FO SEARCH")
+print("==========================================")
 
-print("\n=== search_url ===")
-try:
-    print(nse.search_url)
-except Exception as e:
-    print("ERROR:", type(e).__name__, e)
+symbols = [
+    "RELIANCE",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "TCS",
+    "SBIN",
+    "AXISBANK",
+    "TATAMOTORS"
+]
 
-print("\n=== TEST SEARCH ===")
+for symbol in symbols:
 
-for args in [
-    ("RELIANCE",),
-    ("RELIANCE", "FO"),
-    ("RELIANCE", "NFO"),
-]:
+    print("\n--------------------------------")
+    print("SYMBOL:", symbol)
+    print("--------------------------------")
+
     try:
-        print("\nCALL:", args)
-        result = nse.search(*args)
+        result = nse.search(symbol, "FO")
+
         print(result)
+
+        if result is not None and not result.empty:
+            print("RESULT COUNT:", len(result))
+            print("COLUMNS:", list(result.columns))
+
     except Exception as e:
         print("ERROR:", type(e).__name__, e)
 
-print("\n====================================")
-print("DIAGNOSTIC COMPLETE")
-print("====================================")
+print("\n==========================================")
+print("DIRECT NSE MASTER URL TEST")
+print("==========================================")
+
+try:
+
+    response = requests.get(
+        nse.search_url,
+        timeout=30
+    )
+
+    print("HTTP STATUS:", response.status_code)
+    print("CONTENT TYPE:", response.headers.get("content-type"))
+    print("CONTENT LENGTH:", len(response.content))
+
+    print("\nFIRST 500 CHARACTERS:")
+    print(response.text[:500])
+
+except Exception as e:
+
+    print(
+        "DIRECT URL ERROR:",
+        type(e).__name__,
+        e
+    )
+
+print("\n==========================================")
+print("TEST COMPLETE")
+print("==========================================")
