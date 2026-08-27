@@ -1,46 +1,45 @@
 from openchart import NSEData
-from datetime import datetime, timedelta
 
-print("Starting OpenChart Futures test...")
+print("Starting FULL NSE F&O FUTURES discovery...")
 
 nse = NSEData()
 
-print("\n=== SEGMENTS ===")
+print("\n=== AVAILABLE SEGMENTS ===")
 print(nse.segments)
 
-print("\n=== TIMEFRAMES ===")
+print("\n=== AVAILABLE TIMEFRAMES ===")
 print(nse.timeframes)
 
-print("\n=== SEARCH NIFTY FO ===")
+print("\n=== FULL F&O SEARCH TEST ===")
 
-fo = nse.search("NIFTY", "FO")
+queries = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
+    "U", "V", "W", "X", "Y", "Z"
+]
 
-print(fo.to_string(index=False))
+all_results = []
 
-print("\n=== TESTING NIFTY FUTURES DIRECTLY ===")
+for q in queries:
+    try:
+        result = nse.search(q, "FO")
 
-end = datetime.now()
-start = end - timedelta(days=2)
+        if result is not None and not result.empty:
+            print(f"\n===== {q} =====")
+            print(result.to_string(index=False))
+            all_results.append(result)
 
-symbol = "NIFTY26AUGFUT"
+    except Exception as e:
+        print(f"{q}: ERROR -> {type(e).__name__}: {e}")
 
-try:
-    data = nse.historical(
-        symbol,
-        "FO",
-        start,
-        end,
-        "5m"
-    )
+print("\n====================================")
+print("FULL F&O DISCOVERY FINISHED")
+print("====================================")
 
-    print("\n=== RESULT ===")
+print("Successful searches:", len(all_results))
 
-    if data is None or data.empty:
-        print("NO DATA FOR", symbol)
-    else:
-        print(data.tail(20).to_string())
-        print("\nFUTURES 5M DATA = OK")
+if not all_results:
+    print("NO F&O DATA FOUND")
+    raise SystemExit(1)
 
-except Exception as e:
-    print("\nERROR:")
-    print(type(e).__name__, str(e))
+print("\nOPENCHART FULL F&O SEARCH = OK")
