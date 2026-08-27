@@ -7,10 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from curl_cffi import requests
 
 print("=" * 75)
-print("NSE DIRECT F&O SCREENER (CURL-CFFI BROWSER ENGINE)")
+print("NSE DIRECT F&O SCREENER (FAST BROWSER ENGINE)")
 print("=" * 75)
 
-MAX_WORKERS = 3
+MAX_WORKERS = 5  # Speed badhane ke liye workers 5 kar diye hain
 
 def load_stock_futures():
     csv_file = "stock_futures.csv"
@@ -29,31 +29,18 @@ def load_stock_futures():
 
 symbols = load_stock_futures()
 
-def get_nse_session():
-    session = requests.Session(impersonate="chrome120")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://www.nseindia.com/"
-    }
-    try:
-        res = session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        if res.status_code == 200:
-            return session, headers
-    except Exception:
-        pass
-    return None, None
-
-session, headers = get_nse_session()
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.nseindia.com/"
+}
 
 def fetch_intraday_candles(symbol):
-    time.sleep(random.uniform(0.2, 0.5))
-    local_session = session if session else requests.Session(impersonate="chrome120")
-    
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}EQ"
     try:
-        res = local_session.get(url, headers=headers, timeout=6)
+        # Fast 3 second timeout taaki hang na ho
+        res = requests.get(url, headers=headers, impersonate="chrome120", timeout=3)
         if res.status_code == 200:
             raw_data = res.json()
             if "grapthData" in raw_data and raw_data["grapthData"]:
