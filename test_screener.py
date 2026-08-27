@@ -1,4 +1,6 @@
 import os
+import time
+import random
 import requests
 import pandas as pd
 from io import BytesIO
@@ -7,19 +9,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FAST MULTI-THREADED F&O SCREENER
+# FIXED F&O SCREENER WITH HEADERS & CONTROLLED CONCURRENCY
 # ============================================================
 print("=" * 75)
-print("NSE F&O FAST MULTI-THREADED SCREENER")
+print("NSE F&O SAFE MULTI-THREADED SCREENER")
 print("=" * 75)
 
 VOLUME_LOOKBACK = 20
 VOLUME_MULTIPLIER = 1.5
-MAX_WORKERS = 15  # 15 Parallel Threads
+MAX_WORKERS = 3  # Lowered to 3 threads to prevent 403 IP block
 
 MASTER_URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
     "Referer": "https://www.nseindia.com/"
 }
 
@@ -55,9 +59,9 @@ def get_trading_dates():
 target_date, start_dt, end_dt = get_trading_dates()
 
 def process_single_symbol(symbol):
-    """ Worker function to process a single symbol independently """
+    """ Safe worker function with random delay """
+    time.sleep(random.uniform(0.2, 0.5))  # Prevents simultaneous hammering
     try:
-        # Fetch Intraday Data
         data = None
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
@@ -72,28 +76,21 @@ def process_single_symbol(symbol):
         if data is None or len(data) < 3:
             return None
 
-        # Standardize Columns
         data.columns = [str(c).strip().lower() for c in data.columns]
         if "timestamp" in data.columns:
             data = data.set_index(pd.to_datetime(data["timestamp"]))
         
-        # Filter Market Hours
         data = data[(data.index.time >= pd.Timestamp("09:15").time()) & 
                     (data.index.time <= pd.Timestamp("15:30").time())]
 
         if len(data) < 3:
             return None
 
-        # ORB High / Low
         orb_candles = data.iloc[:3]
         orb_high = float(orb_candles["high"].max())
         orb_low = float(orb_candles["low"].min())
         day_open = float(data.iloc[0]["open"])
 
-        # PDH / PDL Calculation
-        pdh, pdl = orb_high, orb_low  # Fallback to ORB if PDH absent
-
-        # Signal Scan
         scan_data = data.iloc[3:].copy()
         for ts, row in scan_data.iterrows():
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
@@ -111,10 +108,10 @@ def process_single_symbol(symbol):
     return None
 
 # ============================================================
-# MULTI-THREADED SCAN EXECUTION
+# SCAN EXECUTION
 # ============================================================
 results = []
-print(f"Scanning {len(symbols)} stocks using {MAX_WORKERS} parallel threads...")
+print(f"Scanning {len(symbols)} stocks using {MAX_WORKERS} safe parallel threads...")
 
 start_time = datetime.now()
 
