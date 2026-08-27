@@ -6,7 +6,34 @@ from curl_cffi import requests
 
 MAX_WORKERS = 8
 
-def load_stock_futures():
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/"
+}
+
+def get_live_fno_futures():
+    """NSE API se live active Stock Futures symbols fetch karta hai (jaise SBISEPT, RELIANCE, etc.)"""
+    url = "https://www.nseindia.com/api/live-option-chain?symbol=NIFTY" # Session cookie set karne ke liye
+    session = requests.Session()
+    try:
+        session.get("https://www.nseindia.com/", headers=headers, impersonate="chrome120", timeout=5)
+        # F&O securities list endpoint
+        fno_url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
+        res = session.get(fno_url, headers=headers, impersonate="chrome120", timeout=5)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            symbols = []
+            for item in data:
+                sym = item.get("symbol")
+                if sym:
+                    symbols.append(sym)
+            if symbols:
+                return symbols
+    except Exception:
+        pass
+    
+    # Fallback agar API fail ho toh CSV ya default list use karegi
     csv_file = "stock_futures.csv"
     if os.path.exists(csv_file):
         try:
@@ -16,17 +43,12 @@ def load_stock_futures():
                 return df["symbol"].astype(str).str.strip().unique().tolist()
         except Exception:
             pass
-    return ["RELIANCE", "SBIN", "INFY", "TATAMOTORS", "ICICIBANK"]
+    return ["SBIN", "RELIANCE", "INFY", "TATAMOTORS", "ICICIBANK"]
 
-symbols = load_stock_futures()
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/"
-}
+symbols = get_live_fno_futures()
 
 def fetch_data(symbol):
+    # Futures ke liye NSE chart API index format
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}EQ"
     try:
         res = requests.get(url, headers=headers, impersonate="chrome120", timeout=4)
@@ -84,13 +106,12 @@ def process_single_symbol(symbol):
             high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
             time_str = ts.strftime("%H:%M")
             
-            # Signal ke waqt open price se kitna % movement hua
             signal_move_pct = round(((close - day_open) / day_open) * 100, 2)
             day_change_pct = round(((day_close - day_open) / day_open) * 100, 2)
 
             if high >= orb_high:
                 return {
-                    "symbol": symbol, "signal": "BUY", "time": time_str,
+                    "symbol": f"{symbol}FUT", "signal": "BUY", "time": time_str,
                     "price": round(close, 2), "signal_move_%": signal_move_pct,
                     "day_open": day_open, "day_high": day_high, "day_low": day_low,
                     "day_close": day_close, "day_change_%": day_change_pct
@@ -98,7 +119,7 @@ def process_single_symbol(symbol):
 
             if low <= orb_low:
                 return {
-                    "symbol": symbol, "signal": "SELL", "time": time_str,
+                    "symbol": f"{symbol}FUT", "signal": "SELL", "time": time_str,
                     "price": round(close, 2), "signal_move_%": signal_move_pct,
                     "day_open": day_open, "day_high": day_high, "day_low": day_low,
                     "day_close": day_close, "day_change_%": day_change_pct
@@ -109,7 +130,7 @@ def process_single_symbol(symbol):
     return None
 
 results = []
-print(f"Scanning {len(symbols)} F&O stocks with 9:15-9:30 ORB + 1.5x Volume & Day Metrics...")
+print(f"Scanning {len(symbols)} Stock Futures with 9:15-9:30 ORB + 1.5x Volume & Day Metrics...")
 start_time = datetime.now()
 
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
