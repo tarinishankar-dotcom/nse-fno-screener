@@ -1,45 +1,135 @@
 from openchart import NSEData
+from datetime import datetime
+import pandas as pd
 
-print("Starting FULL NSE F&O FUTURES discovery...")
+print("==========================================")
+print("FULL NSE F&O FUTURES DISCOVERY")
+print("==========================================")
 
 nse = NSEData()
 
-print("\n=== AVAILABLE SEGMENTS ===")
-print(nse.segments)
+# Search broad F&O universe
+print("\nSearching complete FO master...")
 
-print("\n=== AVAILABLE TIMEFRAMES ===")
-print(nse.timeframes)
+try:
+    df = nse.search("FUT", "FO")
+except Exception as e:
+    print("FUT search failed:", e)
+    df = None
 
-print("\n=== FULL F&O SEARCH TEST ===")
+# If FUT search doesn't return the complete list,
+# try common current-month expiry patterns.
+if df is None or df.empty:
+    print("Trying alternative FO search...")
 
-queries = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
-    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
-    "U", "V", "W", "X", "Y", "Z"
-]
+    results = []
 
-all_results = []
+    for q in [
+        "FUT",
+        "26AUGFUT",
+        "26SEPFUT",
+        "26OCTFUT",
+        "26NOVFUT",
+        "26DECFUT"
+    ]:
+        try:
+            r = nse.search(q, "FO")
+            if r is not None and not r.empty:
+                results.append(r)
+        except Exception as e:
+            print("Search error:", q, e)
 
-for q in queries:
-    try:
-        result = nse.search(q, "FO")
+    if results:
+        df = pd.concat(results, ignore_index=True)
 
-        if result is not None and not result.empty:
-            print(f"\n===== {q} =====")
-            print(result.to_string(index=False))
-            all_results.append(result)
-
-    except Exception as e:
-        print(f"{q}: ERROR -> {type(e).__name__}: {e}")
-
-print("\n====================================")
-print("FULL F&O DISCOVERY FINISHED")
-print("====================================")
-
-print("Successful searches:", len(all_results))
-
-if not all_results:
-    print("NO F&O DATA FOUND")
+if df is None or df.empty:
+    print("\nERROR: No F&O data returned.")
     raise SystemExit(1)
 
-print("\nOPENCHART FULL F&O SEARCH = OK")
+# Remove duplicates
+df = df.drop_duplicates(subset=["symbol"])
+
+print("\nTotal FO records found:", len(df))
+
+# Keep Futures only
+if "type" in df.columns:
+    futures = df[
+        df["type"].astype(str).str.lower().str.contains("future")
+    ].copy()
+else:
+    futures = df[df["symbol"].astype(str).str.endswith("FUT")].copy()
+
+# Remove option contracts
+futures = futures[
+    futures["symbol"].astype(str).str.endswith("FUT")
+].copy()
+
+# Sort
+futures = futures.sort_values("symbol").reset_index(drop=True)
+
+print("\n==========================================")
+print("ALL FUTURES CONTRACTS")
+print("==========================================")
+
+print(futures.to_string(index=False))
+
+print("\n==========================================")
+print("FUTURES COUNT:", len(futures))
+print("==========================================")
+
+# Separate index futures and stock futures
+index_names = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "NIFTYNXT50"
+]
+
+def is_index_future(symbol):
+    symbol = str(symbol).upper()
+
+    for x in index_names:
+        if symbol.startswith(x) and symbol.endswith("FUT"):
+            return True
+
+    return False
+
+futures["category"] = futures["symbol"].apply(
+    lambda x: "INDEX FUTURE"
+    if is_index_future(x)
+    else "STOCK FUTURE"
+)
+
+stock_futures = futures[
+    futures["category"] == "STOCK FUTURE"
+].copy()
+
+index_futures = futures[
+    futures["category"] == "INDEX FUTURE"
+].copy()
+
+print("\n==========================================")
+print("INDEX FUTURES:", len(index_futures))
+print("STOCK FUTURES:", len(stock_futures))
+print("==========================================")
+
+print("\n========== STOCK FUTURES ==========")
+
+print(
+    stock_futures[
+        ["symbol", "scripcode", "description", "type", "exchange"]
+    ].to_string(index=False)
+)
+
+# Save complete list
+futures.to_csv("all_futures.csv", index=False)
+stock_futures.to_csv("stock_futures.csv", index=False)
+
+print("\n==========================================")
+print("FILES CREATED")
+print("all_futures.csv")
+print("stock_futures.csv")
+print("==========================================")
+
+print("\nFULL NSE F&O FUTURES TEST = OK")
