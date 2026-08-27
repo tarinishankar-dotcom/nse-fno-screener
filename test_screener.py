@@ -1,44 +1,35 @@
 import os
 import time
 import random
-import requests
 import pandas as pd
-from io import BytesIO
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openchart import NSEData
 
 # ============================================================
-# FIXED F&O SCREENER WITH HEADERS & CONTROLLED CONCURRENCY
+# FIXED F&O SCREENER (USING LOCAL CSV SYMBOLS)
 # ============================================================
 print("=" * 75)
-print("NSE F&O SAFE MULTI-THREADED SCREENER")
+print("NSE F&O SCREENER (LOCAL CSV DATA DRIVEN)")
 print("=" * 75)
 
-VOLUME_LOOKBACK = 20
-VOLUME_MULTIPLIER = 1.5
-MAX_WORKERS = 3  # Lowered to 3 threads to prevent 403 IP block
-
-MASTER_URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer": "https://www.nseindia.com/"
-}
+MAX_WORKERS = 3
 
 def load_stock_futures():
-    try:
-        r = requests.get(MASTER_URL, headers=HEADERS, timeout=10)
-        if r.status_code == 200:
-            df = pd.read_csv(BytesIO(r.content))
-            df.columns = [str(c).strip().upper() for c in df.columns]
-            sym_col = "SYMBOL" if "SYMBOL" in df.columns else "UNDERLYING"
-            symbols = df[sym_col].astype(str).str.strip().dropna().unique().tolist()
-            indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"]
-            return [s for s in symbols if s not in indices and not s.startswith("UNDERLYING")]
-    except Exception:
-        pass
+    """ Load symbols directly from local stock_futures.csv """
+    csv_file = "stock_futures.csv"
+    if os.path.exists(csv_file):
+        try:
+            df = pd.read_csv(csv_file)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            if "symbol" in df.columns:
+                symbols = df["symbol"].astype(str).str.strip().unique().tolist()
+                print(f"Loaded {len(symbols)} symbols from local {csv_file}")
+                return symbols
+        except Exception as e:
+            print(f"Error reading local CSV: {e}")
+            
+    # Fallback default symbols
     return ["RELIANCE", "SBIN", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 symbols = load_stock_futures()
@@ -59,15 +50,19 @@ def get_trading_dates():
 target_date, start_dt, end_dt = get_trading_dates()
 
 def process_single_symbol(symbol):
-    """ Safe worker function with random delay """
-    time.sleep(random.uniform(0.2, 0.5))  # Prevents simultaneous hammering
+    """ Safe worker function """
+    time.sleep(random.uniform(0.1, 0.3))
     try:
         data = None
         for offset in range(3):
             s_dt = start_dt - timedelta(days=offset)
             e_dt = end_dt - timedelta(days=offset)
             try:
+                # Primary attempt: Stock Segment / Alternate: Equity Segment
                 data = nse.historical(symbol, "FO", s_dt, e_dt, "5m")
+                if data is None or len(data) == 0:
+                    data = nse.historical(symbol, "EQ", s_dt, e_dt, "5m")
+                
                 if data is not None and len(data) > 0:
                     break
             except Exception:
@@ -111,7 +106,7 @@ def process_single_symbol(symbol):
 # SCAN EXECUTION
 # ============================================================
 results = []
-print(f"Scanning {len(symbols)} stocks using {MAX_WORKERS} safe parallel threads...")
+print(f"Scanning {len(symbols)} stocks using {MAX_WORKERS} parallel threads...")
 
 start_time = datetime.now()
 
