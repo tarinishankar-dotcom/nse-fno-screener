@@ -5,9 +5,10 @@ print("=" * 60)
 print("CURRENT NSE F&O FUTURES DISCOVERY - OPENCHART")
 print("=" * 60)
 
-# ---------------------------------------------------------
-# OPENCHART
-# ---------------------------------------------------------
+# =========================================================
+# OPENCHART INITIALIZE
+# =========================================================
+
 nse = openchart.NSEData()
 
 print("\n[1] SEGMENTS")
@@ -16,9 +17,11 @@ print(nse.segments())
 print("\n[2] TIMEFRAMES")
 print(nse.timeframes())
 
-# ---------------------------------------------------------
-# TEST SYMBOL SEARCH
-# ---------------------------------------------------------
+
+# =========================================================
+# SYMBOL SEARCH TEST
+# =========================================================
+
 symbols = [
     "RELIANCE",
     "HDFCBANK",
@@ -35,26 +38,40 @@ print("SYMBOL SEARCH TEST")
 print("=" * 60)
 
 for symbol in symbols:
+
     print("\n----------------------------------------")
     print("SEARCH:", symbol)
     print("----------------------------------------")
 
     try:
-        result = nse.search(symbol, segment="FO")
+
+        result = nse.search(
+            symbol,
+            segment="FO"
+        )
 
         print(result)
 
         if result is not None:
+
             print("ROWS:", len(result))
-            print("COLUMNS:", list(result.columns))
+            print(
+                "COLUMNS:",
+                list(result.columns)
+            )
 
     except Exception as e:
-        print("ERROR:", repr(e))
+
+        print(
+            "ERROR:",
+            repr(e)
+        )
 
 
-# ---------------------------------------------------------
-# TRY DIRECT FO SEARCH
-# ---------------------------------------------------------
+# =========================================================
+# F&O DISCOVERY
+# =========================================================
+
 print("\n" + "=" * 60)
 print("FO MASTER DISCOVERY")
 print("=" * 60)
@@ -71,14 +88,20 @@ test_symbols = [
     "TCS",
     "SBIN",
     "AXISBANK",
+    "TATAMOTORS",
 ]
 
 all_data = []
 
+
 for symbol in test_symbols:
 
     try:
-        df = nse.search(symbol, segment="FO")
+
+        df = nse.search(
+            symbol,
+            segment="FO"
+        )
 
         if df is not None and len(df) > 0:
 
@@ -87,27 +110,32 @@ for symbol in test_symbols:
             )
 
             df = df.copy()
+
             df["search_symbol"] = symbol
 
             all_data.append(df)
 
         else:
+
             print(
                 f"{symbol:15} -> 0 records"
             )
 
     except Exception as e:
+
         print(
             f"{symbol:15} -> ERROR: {e}"
         )
 
 
-# ---------------------------------------------------------
-# COMBINE
-# ---------------------------------------------------------
+# =========================================================
+# COMBINE RESULTS
+# =========================================================
+
 print("\n" + "=" * 60)
 print("COMBINING RESULTS")
 print("=" * 60)
+
 
 if all_data:
 
@@ -116,13 +144,22 @@ if all_data:
         ignore_index=True
     )
 
-    print("TOTAL RECORDS:", len(combined))
+    print(
+        "TOTAL RECORDS:",
+        len(combined)
+    )
 
     print("\nCOLUMNS:")
-    print(list(combined.columns))
+
+    print(
+        list(combined.columns)
+    )
 
     print("\nFIRST RECORDS:")
-    print(combined.head(30).to_string())
+
+    print(
+        combined.head(30).to_string()
+    )
 
     combined.to_csv(
         "fo_search_results.csv",
@@ -130,12 +167,21 @@ if all_data:
     )
 
     print("\nFILE CREATED:")
-    print("fo_search_results.csv")
+
+    print(
+        "fo_search_results.csv"
+    )
 
 else:
 
-    print("NO FO RECORDS FOUND")
+    print(
+        "NO FO RECORDS FOUND"
+    )
 
+
+# =========================================================
+# COMPLETE
+# =========================================================
 
 print("\n" + "=" * 60)
 print("TEST COMPLETE")
