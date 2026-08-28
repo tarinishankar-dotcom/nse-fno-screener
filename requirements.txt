@@ -1,2 +1,4 @@
 pandas
-nsepython
+requests
+selenium
+webdriver-manager
