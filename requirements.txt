@@ -1,2 +1,3 @@
 pandas
 curl_cffi
+jugaad-data
