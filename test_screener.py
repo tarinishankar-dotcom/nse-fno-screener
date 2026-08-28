@@ -1,8 +1,7 @@
 import os
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
-from curl_cffi import requests
+from jugaad_data.nse import bhavcopy_save, nse_derivatives_bhavcopy
 
 def get_fno_symbols():
     """Local stock_futures.csv file se symbols load karta hai"""
@@ -15,77 +14,68 @@ def get_fno_symbols():
                 if col in df.columns:
                     symbols = df[col].astype(str).str.strip().dropna().unique().tolist()
                     print(f"Loaded {len(symbols)} symbols from {csv_file}")
-                    return symbols
+                    return [s.replace("FUT", "").strip() for s in symbols]
         except Exception as e:
             print(f"Error reading stock_futures.csv: {e}")
             
     return ["SBIN", "RELIANCE", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 def scan_market():
-    print("Initializing F&O Screener using curl_cffi...")
+    print("Initializing F&O Futures Screener using jugaad-data Bhavcopy...")
     symbols = get_fno_symbols()
-    print(f"Total symbols to process: {len(symbols)}")
     
-    results = []
+    # Pichle kuch dino mein se sabse recent trading date nikalna (weekend ya holiday handle karne ke liye)
+    target_date = datetime.now().date() - timedelta(days=1)
     
-    # Session setup with proper headers to bypass NSE restrictions
-    session = requests.Session(impersonate="chrome")
-    
-    # Pehle NSE cookies set karne ke liye main site hit karte hain
-    try:
-        session.get("https://www.nseindia.com", timeout=10)
-        time.sleep(1)
-    except Exception as e:
-        print(f"Initial NSE handshake warning: {e}")
-
-    for symbol in symbols:
-        clean_symbol = symbol.replace("FUT", "").strip()
-        url = f"https://www.nseindia.com/api/quote-equity?symbol={clean_symbol}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/"
-        }
-        
+    df_futures = None
+    for i in range(5):  # Pichle 5 dino tak try karega jab tak data na mil jaye
         try:
-            response = session.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                price_info = data.get("priceInfo", {})
-                
-                last_price = price_info.get("lastPrice", 0)
-                day_open = price_info.get("open", 0)
-                day_high = price_info.get("intraDayHighLow", {}).get("max", 0)
-                day_low = price_info.get("intraDayHighLow", {}).get("min", 0)
-                
-                if last_price > 0:
-                    print(f"[SUCCESS] {clean_symbol} -> Price: {last_price} | Open: {day_open}")
-                    results.append({
-                        "symbol": f"{clean_symbol}FUT",
-                        "last_price": last_price,
-                        "day_open": day_open,
-                        "day_high": day_high,
-                        "day_low": day_low,
-                        "timestamp": datetime.now().strftime("%H:%M:%S")
-                    })
-            else:
-                print(f"Skipping {clean_symbol}: HTTP status {response.status_code}")
-                
-            time.sleep(0.4) # Server safety delay
-            
+            print(f"Trying to fetch F&O Bhavcopy for date: {target_date}")
+            df_futures = nse_derivatives_bhavcopy(target_date)
+            if df_futures is not None and not df_futures.empty:
+                break
         except Exception as e:
-            print(f"Error fetching {clean_symbol}: {e}")
-            continue
+            pass
+        target_date -= timedelta(days=1)
+        
+    if df_futures is None or df_futures.empty:
+        print("NO DATA FETCHED: Could not retrieve derivatives bhavcopy.")
+        return
+
+    # Columns ko clean karna
+    df_futures.columns = [str(c).strip().upper() for c in df_futures.columns]
+    
+    # Sirf Stock Futures (FUTSTK) ko filter karna (Index futures ko chhod kar)
+    if 'INSTRUMENT' in df_futures.columns:
+        df_stk_fut = df_futures[df_futures['INSTRUMENT'].str.contains('FUTSTK', na=False)]
+    else:
+        df_stk_fut = df_futures
+
+    results = []
+    for symbol in symbols:
+        match = df_stk_fut[df_stk_fut['SYMBOL'].str.strip() == symbol]
+        if not match.empty:
+            # Nearest expiry contract ko pehle lena
+            row = match.iloc[0]
+            results.append({
+                "symbol": f"{symbol}FUT",
+                "expiry": row.get("EXPIRY_DT", ""),
+                "last_price": row.get("CLOSE_PRICE", row.get("SETTLE_PR", 0)),
+                "day_open": row.get("OPEN_PRICE", 0),
+                "day_high": row.get("HIGH_PRICE", 0),
+                "day_low": row.get("LOW_PRICE", 0),
+                "timestamp": datetime.now().strftime("%Y-%m-%d")
+            })
+            print(f"[SUCCESS] {symbol}FUT -> Close: {row.get('CLOSE_PRICE', 0)}")
 
     if results:
-        df = pd.DataFrame(results)
-        df.to_csv("nse_fno_signals.csv", index=False)
+        out_df = pd.DataFrame(results)
+        out_df.to_csv("nse_fno_signals.csv", index=False)
         print("\n--- SCAN COMPLETED ---")
-        print(df.head(10).to_string(index=False))
+        print(out_df.head(10).to_string(index=False))
         print("Saved to nse_fno_signals.csv")
     else:
-        print("NO DATA FETCHED")
+        print("NO DATA FETCHED for given symbols.")
 
 if __name__ == "__main__":
     scan_market()
