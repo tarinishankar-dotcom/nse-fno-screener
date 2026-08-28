@@ -22,25 +22,17 @@ headers = {
 
 session = requests.Session()
 
-
 def init_session():
     try:
-        session.get(
-            "https://www.nseindia.com/",
-            headers=headers,
-            impersonate="chrome120",
-            timeout=REQUEST_TIMEOUT,
-        )
+        session.get("https://www.nseindia.com/", headers=headers, impersonate="chrome120", timeout=REQUEST_TIMEOUT)
         return True
     except Exception:
         return False
-
 
 def get_live_fno_futures():
     try:
         if not init_session():
             raise RuntimeError("session init failed")
-
         url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
         res = session.get(url, headers=headers, impersonate="chrome120", timeout=REQUEST_TIMEOUT)
         if res.status_code == 200:
@@ -49,19 +41,7 @@ def get_live_fno_futures():
             return list(dict.fromkeys(syms))
     except Exception:
         pass
-
-    csv_file = "stock_futures.csv"
-    if os.path.exists(csv_file):
-        try:
-            df = pd.read_csv(csv_file)
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            if "symbol" in df.columns:
-                return df["symbol"].astype(str).str.strip().dropna().unique().tolist()
-        except Exception:
-            pass
-
     return ["SBIN", "RELIANCE", "INFY", "TATAMOTORS", "ICICIBANK"]
-
 
 def fetch_json(url):
     for attempt in range(MAX_RETRIES):
@@ -78,14 +58,12 @@ def fetch_json(url):
             time.sleep(min(8, (2 ** attempt) + random.uniform(0.2, 1.2)))
     return None, None, None
 
-
-def parse_chart_debug(symbol):
+def check_price_only(symbol):
     url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}EQ"
     raw, status, wait = fetch_json(url)
 
     if status == 429:
         return {"symbol": symbol, "status": "rate_limited", "cooldown_s": wait}
-
     if not raw:
         return None
 
@@ -93,96 +71,41 @@ def parse_chart_debug(symbol):
     if not gd:
         return None
 
-    if len(gd[0]) >= 3:
-        df = pd.DataFrame(gd, columns=["timestamp", "price", "volume"])
-    else:
-        df = pd.DataFrame(gd, columns=["timestamp", "price"])
-        df["volume"] = 0
-
+    df = pd.DataFrame(gd, columns=["timestamp", "price", "volume"] if len(gd[0]) >= 3 else ["timestamp", "price"])
     df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce")
     df = df.dropna(subset=["datetime"]).set_index("datetime").sort_index()
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
     df = df.dropna(subset=["price"])
+    
     if df.empty:
         return None
 
-    df_1m = df["price"].resample("1min").ohlc()
-    df_1m["volume"] = df["volume"].resample("1min").sum()
-    df_1m = df_1m.dropna()
-
-    if len(df_1m) < 16:
-        return None
-
-    day_open = float(df_1m.iloc[0]["open"])
-    day_high = float(df_1m["high"].max())
-    day_low = float(df_1m["low"].min())
-    day_close = float(df_1m.iloc[-1]["close"])
-
-    # Relaxed PDH/PDL for testing (Day Open ke thoda upar/neeche)
-    pdh = day_open * 1.002 
-    pdl = day_open * 0.998 
-
-    # Relaxed Volume Spike Check (1.1x instead of 1.5x)
-    window_15m = df_1m.between_time("09:15", "09:30")
-    if window_15m.empty:
-        window_15m = df_1m.iloc[:15] # fallback if time index differs
-
-    rolling_avg_vol = df_1m["volume"].rolling(window=20, min_periods=1).mean()
+    latest_price = float(df.iloc[-1]["price"])
+    total_candles = len(df)
     
-    has_spike = False
-    for ts, row in window_15m.iterrows():
-        avg_v = rolling_avg_vol.loc[ts] if ts in rolling_avg_vol.index else 0
-        if avg_v > 0 and row["volume"] >= (1.1 * avg_v):
-            has_spike = True
-            break
+    print(f"[PRICE CHECK] {symbol} -> Latest Price: {latest_price} | Total Data Points: {total_candles}")
+    
+    return {
+        "symbol": f"{symbol}FUT",
+        "latest_price": latest_price,
+        "total_candles": total_candles
+    }
 
-    print(f"[DEBUG] {symbol} -> Volume Spike (1.1x): {has_spike} | Day High: {day_high}")
+if __name__ == "__main__":
+    symbols = get_live_fno_futures()[:210]
+    print(f"Checking live prices for {len(symbols)} symbols...")
+    start = datetime.now()
 
-    if not has_spike:
-        return None
-
-    scan_1m = df_1m.iloc[15:].copy()
-    if scan_1m.empty:
-        scan_1m = df_1m.tail(5)
-
-    for ts, row in scan_1m.iterrows():
-        high, low, close = float(row["high"]), float(row["low"]), float(row["close"])
-        time_str = ts.strftime("%H:%M")
-        signal_move_pct = round(((close - day_open) / day_open) * 100, 2)
-        day_change_pct = round(((day_close - day_open) / day_open) * 100, 2)
-
-        if high >= pdh:
-            return {
-                "symbol": f"{symbol}FUT", "signal": "BUY", "time": time_str,
-                "price": round(close, 2), "signal_move_%": signal_move_pct,
-                "day_open": day_open, "day_high": day_high, "day_low": day_low,
-                "day_close": day_close, "day_change_%": day_change_pct,
-            }
-
-        if low <= pdl:
-            return {
-                "symbol": f"{symbol}FUT", "signal": "SELL", "time": time_str,
-                "price": round(close, 2), "signal_move_%": signal_move_pct,
-                "day_open": day_open, "day_high": day_high, "day_low": day_low,
-                "day_close": day_close, "day_change_%": day_change_pct,
-            }
-
-    return None
-
-
-def scan_symbols(symbols):
     results = []
     cooldown_until = 0
 
     for i in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[i:i + BATCH_SIZE]
-
         while time.time() < cooldown_until:
             time.sleep(1)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            fut_map = {executor.submit(parse_chart_debug, s): s for s in batch}
+            fut_map = {executor.submit(check_price_only, s): s for s in batch}
             for fut in as_completed(fut_map):
                 res = fut.result()
                 if isinstance(res, dict) and res.get("status") == "rate_limited":
@@ -193,24 +116,5 @@ def scan_symbols(symbols):
 
         time.sleep(BASE_SLEEP + random.uniform(0.2, 0.8))
 
-    return results
-
-
-if __name__ == "__main__":
-    symbols = get_live_fno_futures()[:210]
-    print(f"Scanning {len(symbols)} symbols with Relaxed Test Filters...")
-    start = datetime.now()
-
-    results = scan_symbols(symbols)
-
     duration = (datetime.now() - start).total_seconds()
-    print(f"Completed in {duration:.2f}s")
-
-    if results:
-        df_res = pd.DataFrame(results).sort_values(by="time")
-        df_res.to_csv("nse_fno_signals.csv", index=False)
-        print("\n--- MATCHED SIGNALS FOUND ---")
-        print(df_res.to_string(index=False))
-        print("Saved: nse_fno_signals.csv")
-    else:
-        print("NO SIGNALS MATCHING RELAXED CRITERIA")
+    print(f"\nCompleted in {duration:.2f}s. Successfully fetched prices for {len(results)} symbols.")
