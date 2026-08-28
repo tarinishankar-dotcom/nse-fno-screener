@@ -23,54 +23,61 @@ def get_fno_symbols():
     return ["SBIN", "RELIANCE", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 def scan_market():
-    print("Initializing F&O Futures Screener via Direct NSE Bhavcopy...")
+    print("Initializing F&O Futures Screener with Robust Bhavcopy Fetcher...")
     symbols = get_fno_symbols()
     
-    # Pichle kuch dino mein se sabse recent trading date nikalna (weekend/holiday handle karne ke liye)
-    target_date = datetime.now().date() - timedelta(days=1)
+    # Aaj ki date se shuru karke pichle 10 dino tak check karenge (holidays/weekends ke liye)
+    target_date = datetime.now().date()
     df_stk_fut = None
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
         "Referer": "https://www.nseindia.com/"
     }
 
-    # Pichle 5 dino ka data check karega jab tak bhavcopy zip file na mil jaye
-    for _ in range(5):
+    session = requests.Session()
+    
+    # Pehle NSE session establish karne ki koshish
+    try:
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+    except Exception:
+        pass
+
+    for _ in range(10):
         try:
             date_str = target_date.strftime("%d%b%Y").upper()
             year_str = target_date.strftime("%Y")
             month_str = target_date.strftime("%b").upper()
             
-            # NSE derivatives bhavcopy URL format
             url = f"https://archives.nseindia.com/content/historical/DERIVATIVES/{year_str}/{month_str}/fo{date_str}bhav.csv.zip"
-            print(f"Trying to download Bhavcopy for: {target_date}")
+            print(f"Checking Bhavcopy for date: {target_date}...")
             
-            session = requests.Session()
-            # Pehle cookies set karne ke liye main site hit karte hain
-            session.get("https://www.nseindia.com", headers=headers, timeout=10)
-            
-            res = session.get(url, headers=headers, timeout=15)
-            if res.status_code == 200:
+            res = session.get(url, headers=headers, timeout=10)
+            if res.status_code == 200 and len(res.content) > 1000:
                 z = zipfile.ZipFile(io.BytesIO(res.content))
                 csv_filename = z.namelist()[0]
                 with z.open(csv_filename) as f:
                     df_stk_fut = pd.read_csv(f)
+                print(f"Successfully downloaded Bhavcopy for {target_date}")
                 break
-        except Exception as e:
+        except Exception:
             pass
             
         target_date -= timedelta(days=1)
         
     if df_stk_fut is None or df_stk_fut.empty:
-        print("NO DATA FETCHED: Could not retrieve derivatives bhavcopy zip.")
+        print("NO DATA FETCHED: Could not retrieve derivatives bhavcopy zip from recent trading sessions.")
         return
 
-    # Columns ko clean karna
+    # Columns clean karna
     df_stk_fut.columns = [str(c).strip().upper() for c in df_stk_fut.columns]
     
-    # Sirf Stock Futures (FUTSTK) ko filter karna
+    # Sirf Stock Futures (FUTSTK) filter karna
     if 'INSTRUMENT' in df_stk_fut.columns:
         df_stk_fut = df_stk_fut[df_stk_fut['INSTRUMENT'].str.contains('FUTSTK', na=False)]
 
@@ -97,7 +104,7 @@ def scan_market():
         print(out_df.head(10).to_string(index=False))
         print("Saved to nse_fno_signals.csv")
     else:
-        print("NO DATA FETCHED for given symbols.")
+        print("NO DATA FETCHED for given symbols in the bhavcopy.")
 
 if __name__ == "__main__":
     scan_market()
