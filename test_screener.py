@@ -9,22 +9,27 @@ from curl_cffi import requests
 
 MAX_WORKERS = 3
 BATCH_SIZE = 30
-REQUEST_TIMEOUT = 6
-BASE_SLEEP = 0.8
+REQUEST_TIMEOUT = 8
+BASE_SLEEP = 1.5
 MAX_RETRIES = 4
 COOLDOWN_AFTER_429 = 600
 
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.nseindia.com/",
+    "Connection": "keep-alive",
 }
 
 session = requests.Session()
 
 def init_session():
     try:
+        # Visit homepage first to grab necessary Cloudflare cookies
         session.get("https://www.nseindia.com/", headers=headers, impersonate="chrome120", timeout=REQUEST_TIMEOUT)
+        time.sleep(1)
         return True
     except Exception:
         return False
@@ -33,6 +38,7 @@ def get_live_fno_futures():
     try:
         if not init_session():
             raise RuntimeError("session init failed")
+        
         url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
         res = session.get(url, headers=headers, impersonate="chrome120", timeout=REQUEST_TIMEOUT)
         if res.status_code == 200:
@@ -53,9 +59,9 @@ def fetch_json(url):
                 ra = r.headers.get("Retry-After")
                 wait = int(ra) if ra and ra.isdigit() else min(COOLDOWN_AFTER_429, 2 ** attempt + random.uniform(0.5, 1.5))
                 return None, 429, wait
-            time.sleep(min(8, (2 ** attempt) + random.uniform(0.2, 1.2)))
+            time.sleep(min(8, (2 ** attempt) + random.uniform(0.5, 1.5)))
         except Exception:
-            time.sleep(min(8, (2 ** attempt) + random.uniform(0.2, 1.2)))
+            time.sleep(min(8, (2 ** attempt) + random.uniform(0.5, 1.5)))
     return None, None, None
 
 def check_price_only(symbol):
@@ -92,6 +98,9 @@ def check_price_only(symbol):
     }
 
 if __name__ == "__main__":
+    print("Initializing session with NSE...")
+    init_session()
+    
     symbols = get_live_fno_futures()[:210]
     print(f"Checking live prices for {len(symbols)} symbols...")
     start = datetime.now()
@@ -114,7 +123,7 @@ if __name__ == "__main__":
                 if res:
                     results.append(res)
 
-        time.sleep(BASE_SLEEP + random.uniform(0.2, 0.8))
+        time.sleep(BASE_SLEEP + random.uniform(0.5, 1.0))
 
     duration = (datetime.now() - start).total_seconds()
     print(f"\nCompleted in {duration:.2f}s. Successfully fetched prices for {len(results)} symbols.")
