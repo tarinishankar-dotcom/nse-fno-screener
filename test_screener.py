@@ -5,31 +5,21 @@ import pandas as pd
 from jugaad_data.nse import NSELive
 
 def get_fno_symbols():
-    """Pehle live NSE se symbols fetch karne ki koshish karega, fail hone par stock_futures.csv use karega"""
-    try:
-        nse = NSELive()
-        q = nse.stock_watch("SECURITIES IN F&O")
-        data = q.get("data", [])
-        symbols = [item.get("symbol") for item in data if item.get("symbol")]
-        if symbols:
-            print("Successfully loaded symbols from live NSE.")
-            return list(dict.fromkeys(symbols))
-    except Exception as e:
-        print(f"Live fetch warning: {e}. Falling back to local stock_futures.csv...")
-
-    # Fallback to local stock_futures.csv present in the repository
+    """Seedha local stock_futures.csv file se symbols load karta hai"""
     csv_file = "stock_futures.csv"
     if os.path.exists(csv_file):
         try:
             df = pd.read_csv(csv_file)
             df.columns = [str(c).strip().lower() for c in df.columns]
-            if "symbol" in df.columns:
-                symbols = df["symbol"].astype(str).str.strip().dropna().unique().tolist()
-                print(f"Loaded {len(symbols)} symbols from stock_futures.csv")
-                return symbols
+            for col in ["symbol", "ticker", "stock"]:
+                if col in df.columns:
+                    symbols = df[col].astype(str).str.strip().dropna().unique().tolist()
+                    print(f"Loaded {len(symbols)} symbols from {csv_file}")
+                    return symbols
         except Exception as e:
             print(f"Error reading stock_futures.csv: {e}")
-
+            
+    # Fallback list agar file na mile
     return ["SBIN", "RELIANCE", "INFY", "TATAMOTORS", "ICICIBANK"]
 
 def scan_market():
@@ -42,18 +32,20 @@ def scan_market():
     
     for symbol in symbols:
         try:
-            quote = nse.stock_quote(symbol)
-            price_info = quote.get("priceInfo", {})
+            # Clean symbol name (jaise FUT ya extra spaces hatane ke liye)
+            clean_symbol = symbol.replace("FUT", "").strip()
+            quote = nse.stock_quote(clean_symbol)
             
+            price_info = quote.get("priceInfo", {})
             last_price = price_info.get("lastPrice", 0)
             day_open = price_info.get("open", 0)
             day_high = price_info.get("intraDayHighLow", {}).get("max", 0)
             day_low = price_info.get("intraDayHighLow", {}).get("min", 0)
             
             if last_price > 0:
-                print(f"[SUCCESS] {symbol} -> Price: {last_price} | Open: {day_open}")
+                print(f"[SUCCESS] {clean_symbol} -> Price: {last_price} | Open: {day_open}")
                 results.append({
-                    "symbol": f"{symbol}FUT",
+                    "symbol": f"{clean_symbol}FUT",
                     "last_price": last_price,
                     "day_open": day_open,
                     "day_high": day_high,
